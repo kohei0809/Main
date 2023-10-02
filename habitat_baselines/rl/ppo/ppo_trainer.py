@@ -1170,12 +1170,14 @@ class PPOTrainerO(BaseRLTrainerOracle):
             top_down_map.append(infos[i]["picture_range_map"]["map"])
             
         
+        """
         for i in range(n_envs):
             logger.info("-------------")
             logger.info(exp_area[i] - exp_area_pre[i])
             logger.info(exp_area[i])
             logger.info(exp_area_pre[i])
             logger.info("*************")
+        """
         
             
         for n in range(len(observations)):

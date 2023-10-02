@@ -4,8 +4,9 @@ import pathlib
 
 date = "23-08-27 21-24-26"
 #date = "23-09-03 02-46-00"
-#mode = "train"
-mode = "val"
+date = "23-09-29 09-11-11"
+mode = "train"
+#mode = "val"
 
 df = pd.read_csv("log/" + date + "/" + mode + "/metrics.csv", names=['time', 'picture', 'ci', 'exp_area', 'path_length'], header=None)
 plt.plot(df['time'], df['picture'], color="blue", label="Number of times taken pictures")

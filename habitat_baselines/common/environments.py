@@ -225,7 +225,7 @@ class InfoRLEnv(RLEnv):
         )
         
         current_measure = self._cal_explored_rate(self._top_down_map, self.fog_of_war_map_all)
-        current_measure *= 1000
+        current_measure *= 10000
         #current_measure *= 100
 
         if self._take_picture():

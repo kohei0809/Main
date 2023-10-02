@@ -186,7 +186,6 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
-data/
 new_checkpoints/
 tb/
 
@@ -195,9 +194,9 @@ train.log
 cpt/
 exp/
 *.csv
-*.png
+taken_picture/
 *.txt
 o.*
-*.sh
 video_dir/
 log/
+result/

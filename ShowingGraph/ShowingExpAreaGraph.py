@@ -6,12 +6,11 @@ date = "23-08-18 12-35-30"
 date = "23-08-18 18-53-17"
 date = "23-08-27 21-24-26"
 #date = "23-09-03 02-46-00"
+date = "23-09-29 09-11-11"
 mode = "train"
-mode = "val"
+#mode = "val"
 
 df = pd.read_csv("log/" + date + "/" + mode + "/metrics.csv", names=['time', 'picture', 'ci', 'exp_area', 'path_length'], header=None)
-df['exp_area'] /= (0.8*0.8*0.1)
-df['exp_area'] /= 900
 plt.plot(df['time'], df['exp_area'], color="blue", label="Exp Area")
 
 #ラベルの追加
