@@ -8,7 +8,7 @@ VIDEO_OPTION: []
 TENSORBOARD_DIR: "tb/train"
 TENSORBOARD_DIR_EVAL: "eval"
 VIDEO_DIR: "video_dir"
-TEST_EPISODE_COUNT: 2200
+TEST_EPISODE_COUNT: 660
 EVAL_CKPT_PATH_DIR: "cpt"
 NUM_PROCESSES: 20
 #NUM_PROCESSES: 1
@@ -34,7 +34,7 @@ RL:
     lr: 2.5e-4
     eps: 1e-5
     max_grad_norm: 0.2
-    num_steps: 256
+    num_steps: 128
     use_gae: True
     gamma: 0.99
     tau: 0.95

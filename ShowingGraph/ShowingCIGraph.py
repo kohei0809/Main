@@ -2,13 +2,13 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import pathlib
 
-date = "23-08-18 12-35-30"
-date = "23-08-18 18-53-17"
-date = "23-09-29 09-11-11"
-mode = "train"
-#mode = "val"
+date = "23-10-03 16-04-23"
+date = "23-10-09 16-02-33"
 
-df = pd.read_csv("log/" + date + "/" + mode + "/metrics.csv", names=['time', 'picture', 'ci', 'exp_area', 'path_length'], header=None)
+mode = "train"
+mode = "eval"
+
+df = pd.read_csv("log/" + date + "/" + mode + "/metrics.csv", names=['time', 'ci', 'exp_area', 'path_length'], header=None)
 plt.plot(df['time'], df['ci'], color="blue", label="CI")
 
 

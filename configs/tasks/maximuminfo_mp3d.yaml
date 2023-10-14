@@ -1,5 +1,5 @@
 ENVIRONMENT:
-  MAX_EPISODE_STEPS: 200
+  MAX_EPISODE_STEPS: 500
 SIMULATOR:
   TURN_ANGLE: 30
   TILT_ANGLE: 30
@@ -32,7 +32,7 @@ TASK:
 
   SENSORS: ['COMPASS_SENSOR', 'GPS_SENSOR', 'POSITION_SENSOR', 'HEADING_SENSOR']
 
-  MEASUREMENTS: ['PICTURE', 'CI', 'EPISODE_LENGTH', 'RAW_METRICS', 'TOP_DOWN_MAP', 'PICTURE_RANGE_MAP']
+  MEASUREMENTS: ['PICTURE', 'CI', 'EPISODE_LENGTH', 'RAW_METRICS', 'TOP_DOWN_MAP', 'PICTURE_RANGE_MAP', 'FOW_MAP']
 
   # CIについて
   CI:
@@ -51,5 +51,5 @@ TASK:
 DATASET:
   TYPE: MaximumInfo-v1
   SPLIT: train
-  DATA_PATH: "data/datasets/v2/maximum/{split}/{split}.json.gz"
+  DATA_PATH: "data/datasets/v3/maximum/{split}/{split}.json.gz"
   SCENES_DIR: "data/scene_datasets/"

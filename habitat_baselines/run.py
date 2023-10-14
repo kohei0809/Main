@@ -76,7 +76,6 @@ def run_exp(exp_config: str, run_type: str, agent_type: str, opts=None) -> None:
         config.TASK_CONFIG.SIMULATOR.DEPTH_SENSOR.MIN_DEPTH = 0.5
         config.TASK_CONFIG.SIMULATOR.DEPTH_SENSOR.MAX_DEPTH = 5.0
         config.TASK_CONFIG.SIMULATOR.AGENT_0.HEIGHT = 1.5
-        config.VIDEO_OPTION = []
         if agent_type == "oracle-ego":
             config.TASK_CONFIG.TASK.MEASUREMENTS.append('FOW_MAP')
         config.freeze()
@@ -120,12 +119,11 @@ def run_exp(exp_config: str, run_type: str, agent_type: str, opts=None) -> None:
 def test():
     exp_config = "habitat_baselines/config/maximuminfo/ppo_maximuminfo.yaml"
     agent_type = "oracle-ego"
-    run_type = "train"
+    run_type = "eval"
     start_date = datetime.datetime.now().strftime('%y-%m-%d %H-%M-%S') 
     
     if run_type == "eval":
-        #datadate = "23-08-18 18-53-17"
-        datadate = "23-08-18 12-35-30"
+        datadate = "23-10-03 16-04-23"
     else:
        datadate = "" 
     
@@ -140,6 +138,9 @@ def test():
     config.TASK_CONFIG.TRAINER_NAME = agent_type
     config.CHECKPOINT_FOLDER = "cpt/" + start_date
     config.EVAL_CKPT_PATH_DIR = "cpt/" + datadate 
+    #config.TEST_EPISODE_COUNT = 1000
+    #config.VIDEO_OPTION = []
+    config.VIDEO_OPTION = ["disk"]
     config.freeze()
     
     if agent_type in ["oracle", "oracle-ego", "no-map"]:
@@ -163,10 +164,8 @@ def test():
     trainer = trainer_init(config)
     
     #ログファイルの設定   
-    log_manager_train = LogManager()
-    log_manager_train.setLogDirectory("./log/" + start_date + "/train")
-    log_manager_val = LogManager()
-    log_manager_val.setLogDirectory("./log/" + start_date + "/val")
+    log_manager = LogManager()
+    log_manager.setLogDirectory("./log/" + start_date + "/" + run_type)
     
     device = (
         torch.device("cuda", config.TORCH_GPU_ID)
@@ -183,9 +182,9 @@ def test():
         if not p_dir.exists():
             p_dir.mkdir(parents=True)
             
-        trainer.train(log_manager_train, start_date)
+        trainer.train(log_manager, start_date)
     elif run_type == "eval":
-        trainer.eval(log_manager_val, start_date)
+        trainer.eval(log_manager, start_date)
        
     end_date = datetime.datetime.now().strftime('%y-%m-%d %H-%M-%S') 
     print("Start at " + start_date)

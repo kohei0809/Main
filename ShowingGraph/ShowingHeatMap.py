@@ -16,8 +16,6 @@ ax = plt.subplot(1, 1, 1)
 ax.axis("off")
 ax.set_aspect('equal')
 plt.subplots_adjust(left=0.1, right=0.95, bottom=0.05, top=0.95)
-    
-
 
 #フォルダがない場合は、作成
 p_dir = pathlib.Path("./result/" + mode + "/heat_map")

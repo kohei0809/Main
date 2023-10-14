@@ -450,6 +450,7 @@ class Picture(Measure):
             self._metric = 1
         else:
             self._metric = 0
+            #self._metric = 1
             
 @registry.register_measure
 class CI(Measure):
@@ -487,7 +488,9 @@ class CI(Measure):
         H = semantic_obs.shape[0]
         W = semantic_obs.shape[1]
         self._matrics = np.zeros((H, W))
+        take_picture=True
         if take_picture:
+            #print(observation)
             measure = self._calCI()
             self._metric = measure[0]
             self._matrics = measure[1]
@@ -512,7 +515,8 @@ class CI(Measure):
         H = semantic_obs.shape[0]
         W = semantic_obs.shape[1]
         size = H * W
-        imp_matrics = np.zeros((H, W))
+        #imp_matrics = np.zeros((H, W))
+        imp_matrics = None
     
         #objectのスコア別リスト
         #void, wall, floor, door, stairs, ceiling, column, railing
@@ -537,8 +541,8 @@ class CI(Measure):
                     w = self._config.LOW_REGION_WEIGHT
             
                 #オブジェクトまでの距離
-                d = math.sqrt(depth_obs[i][j])
-                d = max(d, 1.0)
+                d = max(depth_obs[i][j], 1.0)
+                d = math.sqrt(d)
                 
                 obs = semantic_obs[i][j]
                 if obs in score0:
@@ -554,7 +558,7 @@ class CI(Measure):
                 
                 score = w * v / d
                 ci += score
-                imp_matrics[i][j] = score
+                #imp_matrics[i][j] = score
         
         ci *= max(len(category), 1.0)
         ci /= size
@@ -1283,6 +1287,8 @@ class TopDownMap(Measure):
             self._draw_point(
                 episode.start_position, maps.MAP_SOURCE_POINT_INDICATOR
             )
+            
+        self.update_metric(None, None)
 
     def _clip_map(self, _map):
         return _map[
@@ -1572,6 +1578,8 @@ class PictureRangeMap(Measure):
             self._draw_point(
                 episode.start_position, maps.MAP_SOURCE_POINT_INDICATOR
             )
+            
+        self.update_metric(None, None)
 
     def _clip_map(self, _map):
         return _map[

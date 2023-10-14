@@ -1,8 +1,8 @@
 #!/bin/sh
 #$ -cwd
-#$ -l f_node=1
+#$ -l f_node=2
 #$ -j y
-#$ -l h_rt=:105:00
+#$ -l h_rt=:24:00:00
 #$ -o output/o.$JOB_ID
 
 source ~/anaconda3/etc/profile.d/conda.sh

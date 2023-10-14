@@ -458,6 +458,20 @@ class RLEnv(gym.Env):
 
         return observations, reward, done, info
 
+    #ci_map作成用
+    def step2(self, *args, **kwargs) -> Tuple[Observations, Any, bool, dict]:
+        r"""Perform an action in the environment.
+
+        :return: :py:`(observations, reward, done, info)`
+        """
+
+        reward = self.get_reward(None, **kwargs)
+        done = self.get_done(None)
+        info = self.get_info(None)
+
+        return reward, done, info
+    
+
     def seed(self, seed: Optional[int] = None) -> None:
         self._env.seed(seed)
 

@@ -132,6 +132,12 @@ class InfoRLEnv(RLEnv):
         self._coordinate_max = 120.0399+1e-6
         
         super().__init__(self._core_env_config, dataset)
+        
+    def __enter__(self):
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
 
     def reset(self):
         self._previous_action = None
@@ -144,6 +150,10 @@ class InfoRLEnv(RLEnv):
     def step(self, *args, **kwargs):
         self._previous_action = kwargs["action"]
         return super().step(*args, **kwargs)
+    
+    def step2(self, *args, **kwargs):
+        return super().step2(*args, **kwargs)
+    
 
     def get_reward_range(self):
         return (
@@ -177,27 +187,7 @@ class InfoRLEnv(RLEnv):
     def get_reward(self, observations, **kwargs):
         reward = self._rl_config.SLACK_REWARD
         ci = -sys.float_info.max
-
-        #観測領域のreward
-        #exp_area = self._env.get_metrics()[self._reward_measure_name].sum() 
-        #current_measure = exp_area * 100
-        """
-        logger.info("AREA: " + str(exp_area) + "," + str(current_measure))
-        logger.info(current_measure - self._previous_measure)
-        top_down_map = self._env.task.sceneMap
-        count = 0
-        for i in range(top_down_map.shape[0]):
-            for j in range(top_down_map.shape[1]):
-                if top_down_map[i][j] != maps.MAP_INVALID_POINT:
-                    count += 1
-                
-        logger.info("TOP_DOWN_MAP: " + str(count))
-        logger.info(str(current_measure/count*100) + "%")
-        """
-        
         matrics = None
-        fog_of_war_map = None
-        self._top_down_map = self._env.task.sceneMap
         
         agent_position = self._env._sim.get_agent_state().position
         a_x, a_y = maps.to_grid(
@@ -210,54 +200,16 @@ class InfoRLEnv(RLEnv):
         agent_position = np.array([a_x, a_y])
         
         # area_rewardの計算
-        if self.fog_of_war_map_all is None:
-            self.fog_of_war_map_all = np.zeros_like(self._top_down_map)
-            
-        self.fog_of_war_map_all = fog_of_war.reveal_fog_of_war(
-            self._top_down_map,
-            self.fog_of_war_map_all,
-            agent_position,
-            self.get_polar_angle(),
-            fov=self._config.TASK.PICTURE_MAP.FOV,
-            max_line_len=self._config.TASK.PICTURE_MAP.VISIBILITY_DIST
-            * max(self._map_resolution)
-            / (self._coordinate_max - self._coordinate_min)
-        )
+        info = self.get_info(observations)
+        _top_down_map = info["top_down_map"]["map"]
+        _fog_of_war_map = info["top_down_map"]["fog_of_war_mask"]
         
-        current_measure = self._cal_explored_rate(self._top_down_map, self.fog_of_war_map_all)
-        current_measure *= 10000
-        #current_measure *= 100
+        current_measure = self._cal_explored_rate(_top_down_map, _fog_of_war_map)
+        current_measure *= 10
 
         if self._take_picture():
             measure = self._env.get_metrics()[self._picture_measure_name]
             ci, matrics = measure[0], measure[1]
-                
-            fog_of_war_map = fog_of_war.reveal_fog_of_war(
-                self._top_down_map,
-                np.zeros_like(self._top_down_map),
-                agent_position,
-                self.get_polar_angle(),
-                fov=self._config.TASK.PICTURE_MAP.FOV,
-                max_line_len=self._config.TASK.PICTURE_MAP.VISIBILITY_DIST
-                * max(self._map_resolution)
-                / (self._coordinate_max - self._coordinate_min)
-            )
-            
-            ##
-            #壁などをマーク付け(1: 写真を撮った範囲, 2: 不可侵領域, 3: 壁, (4:現在位置))
-            OUT_REGION = 1
-            WALL_REGION = 2
-            ##
-            x, y = self._map_resolution
-            for i in range(y):
-                for j in range(x):
-                    if self._top_down_map[i][j] == OUT_REGION:
-                        fog_of_war_map[i][j] = 2
-                    elif self._top_down_map[i][j] == WALL_REGION:
-                        fog_of_war_map[i][j] = 3
-            
-            
-            #####################
 
         elif self._env.task.is_found_called and self._rl_config.FALSE_FOUND_PENALTY:
             reward -= self._rl_config.FALSE_FOUND_PENALTY_VALUE
@@ -268,7 +220,7 @@ class InfoRLEnv(RLEnv):
         output = self._previous_measure
         self._previous_measure = current_measure
 
-        return [reward, ci, current_measure, output], matrics, fog_of_war_map, self._top_down_map
+        return [reward, ci, current_measure, output], matrics
     
     def get_polar_angle(self):
         agent_state = self._env._sim.get_agent_state()

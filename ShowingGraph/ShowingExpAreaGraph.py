@@ -2,15 +2,12 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import pathlib
 
-date = "23-08-18 12-35-30"
-date = "23-08-18 18-53-17"
-date = "23-08-27 21-24-26"
-#date = "23-09-03 02-46-00"
-date = "23-09-29 09-11-11"
+date = "23-10-03 16-04-23"
+date = "23-10-09 16-02-33"
 mode = "train"
-#mode = "val"
+mode = "eval"
 
-df = pd.read_csv("log/" + date + "/" + mode + "/metrics.csv", names=['time', 'picture', 'ci', 'exp_area', 'path_length'], header=None)
+df = pd.read_csv("log/" + date + "/" + mode + "/metrics.csv", names=['time', 'ci', 'exp_area', 'path_length'], header=None)
 plt.plot(df['time'], df['exp_area'], color="blue", label="Exp Area")
 
 #ラベルの追加

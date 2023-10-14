@@ -5,11 +5,11 @@ import pathlib
 #date = "23-08-01 19-24-19"
 date = "23-08-18 18-53-17"
 #date = "23-08-18 12-35-30"
-date = "23-09-29 09-11-11"
-
+date = "23-10-03 16-04-23"
+#date = "23-10-09 16-02-33"
 
 mode = "train"
-#mode = "val"
+#mode = "eval"
 
 df = pd.read_csv("log/" + date + "/" + mode + "/reward.csv", names=['time', 'reward'], header=None)
 plt.plot(df['time'], df['reward'], color="blue", label="reward")

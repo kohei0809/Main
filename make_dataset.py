@@ -45,7 +45,7 @@ if __name__ == '__main__':
     episode_num = 20000
     
     i = 0
-    dataset_path = "data/datasets/v2/maximum/"
+    dataset_path = "data/datasets/v4/maximum/"
     dataset = MaximumInfoDatasetV1()
     split = ""
     while(True):
@@ -63,7 +63,7 @@ if __name__ == '__main__':
                 dataset = MaximumInfoDatasetV1()
                     
             split = "val"
-            episode_num = 200
+            episode_num = 7
         elif i < train_scene_num+val_scene_num+test_scene_num:
             if i == train_scene_num+val_scene_num:
                 #datasetを.gzに圧縮

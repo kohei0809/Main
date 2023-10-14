@@ -8,7 +8,7 @@ date = "23-08-06 17-02-58"
 mode = "train"
 mode = "val"
 
-df = pd.read_csv("log/" + date + "/" + mode + "/metrics.csv", names=['time', 'picture', 'ci', 'episode_length', 'exp_area', 'path_length'], header=None)
+df = pd.read_csv("log/" + date + "/" + mode + "/metrics.csv", names=['time', 'ci', 'episode_length', 'exp_area', 'path_length'], header=None)
 plt.plot(df['time'], df['episode_length'], color="blue", label="Episode Length")
 
 
