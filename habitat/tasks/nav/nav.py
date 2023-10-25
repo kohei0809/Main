@@ -82,6 +82,14 @@ class RoomGoal(NavigationGoal):
 @attr.s(auto_attribs=True, kw_only=True)
 class MaximumInformationEpisode(Episode):
     start_room: Optional[str] = None
+    
+    shortest_paths: Optional[List[ShortestPathPoint]] = None
+    goals: List[NavigationGoal] = attr.ib(
+        default=None, validator=not_none_validator
+    )
+    object_category: Optional[List[str]] = None
+    object_index: Optional[int] = None
+    currGoalIndex: Optional[int] = 0 
 
 @attr.s(auto_attribs=True, kw_only=True)
 class NavigationEpisode(Episode):
@@ -100,11 +108,15 @@ class NavigationEpisode(Episode):
         shortest_paths: list containing shortest paths to goals
     """
 
+    start_room: Optional[str] = None
+    shortest_paths: Optional[List[ShortestPathPoint]] = None
+    
     goals: List[NavigationGoal] = attr.ib(
         default=None, validator=not_none_validator
     )
-    start_room: Optional[str] = None
-    shortest_paths: Optional[List[ShortestPathPoint]] = None
+    object_category: Optional[List[str]] = None
+    object_index: Optional[int] = None
+    currGoalIndex: Optional[int] = 0 
 
 
 @registry.register_sensor
@@ -491,9 +503,10 @@ class CI(Measure):
         take_picture=True
         if take_picture:
             #print(observation)
-            measure = self._calCI()
-            self._metric = measure[0]
-            self._matrics = measure[1]
+            #measure = self._calCI()
+            #self._metric = measure[0]
+            #self._matrics = measure[1]
+            self._metric = 0 
         else:
             self._metric = 0 
             
@@ -1277,11 +1290,9 @@ class TopDownMap(Measure):
         self.update_fog_of_war_mask(np.array([a_x, a_y]))
 
         # draw source and target parts last to avoid overlap
-        #self._draw_goals_view_points(episode)
-        #self._draw_goals_aabb(episode)
-        #self._draw_goals_positions(episode)
-
-        #self._draw_shortest_path(episode, agent_position)
+        self._draw_goals_view_points(episode)
+        self._draw_goals_aabb(episode)
+        self._draw_goals_positions(episode)
 
         if self._config.DRAW_SOURCE:
             self._draw_point(
@@ -1636,6 +1647,7 @@ class PictureRangeMap(Measure):
             self._coordinate_max,
             self._map_resolution,
         )
+        """
         # Don't draw over the source point
         if self._top_down_map[a_x, a_y] != maps.MAP_SOURCE_POINT_INDICATOR:
             color = 10 + min(
@@ -1652,6 +1664,7 @@ class PictureRangeMap(Measure):
                 color,
                 thickness=thickness,
             )
+        """
 
         self.update_fog_of_war_mask(np.array([a_x, a_y]))
 
@@ -1894,12 +1907,19 @@ class DistanceToMultiGoal(Measure):
         current_position = self._sim.get_agent_state().position.tolist()
 
         if self._config.DISTANCE_TO == "POINT":
+            """
             distance_to_target = self._sim.geodesic_distance(
                 current_position, episode.goals[task.currGoalIndex].position
             )
             for goal_number in range(task.currGoalIndex, len(episode.goals)-1):
                 distance_to_target += self._sim.geodesic_distance(
                     episode.goals[goal_number].position, episode.goals[goal_number+1].position
+                )
+            """
+            distance_to_target = 0.0
+            for goal_number in range(len(episode.goals)):
+                distance_to_target += self._sim.geodesic_distance(
+                    current_position, episode.goals[goal_number].position
                 )
         else:
             logger.error(

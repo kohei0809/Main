@@ -119,11 +119,11 @@ def run_exp(exp_config: str, run_type: str, agent_type: str, opts=None) -> None:
 def test():
     exp_config = "habitat_baselines/config/maximuminfo/ppo_maximuminfo.yaml"
     agent_type = "oracle-ego"
-    run_type = "eval"
+    run_type = "train"
     start_date = datetime.datetime.now().strftime('%y-%m-%d %H-%M-%S') 
     
     if run_type == "eval":
-        datadate = "23-10-03 16-04-23"
+        datadate = "23-10-19 15-55-17"
     else:
        datadate = "" 
     
@@ -134,13 +134,14 @@ def test():
     np.random.seed(config.TASK_CONFIG.SEED)
     
     config.defrost()
+    config.TASK_CONFIG.DATASET.DATA_PATH = "data/datasets/multinav/3_ON/{split}/{split}.json.gz"
     config.TRAINER_NAME = agent_type
     config.TASK_CONFIG.TRAINER_NAME = agent_type
     config.CHECKPOINT_FOLDER = "cpt/" + start_date
     config.EVAL_CKPT_PATH_DIR = "cpt/" + datadate 
     #config.TEST_EPISODE_COUNT = 1000
-    #config.VIDEO_OPTION = []
-    config.VIDEO_OPTION = ["disk"]
+    config.VIDEO_OPTION = []
+    #config.VIDEO_OPTION = ["disk"]
     config.freeze()
     
     if agent_type in ["oracle", "oracle-ego", "no-map"]:

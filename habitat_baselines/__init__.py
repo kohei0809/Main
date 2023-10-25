@@ -5,6 +5,6 @@
 # LICENSE file in the root directory of this source tree.
 
 from habitat_baselines.common.base_trainer import BaseRLTrainerNonOracle, BaseRLTrainerOracle, BaseTrainer
-from habitat_baselines.rl.ppo.ppo_trainer import PPOTrainerO, PPOTrainerNO, RolloutStorageOracle, RolloutStorageNonOracle
+from habitat_baselines.rl.ppo.ppo_trainer import PPOTrainerO, RolloutStorageOracle, RolloutStorageNonOracle
 
-__all__ = ["BaseTrainer", "BaseRLTrainerNonOracle", "BaseRLTrainerOracle", "PPOTrainerO", "PPOTrainerNO", "RolloutStorage", "RolloutStorageOracle", "RolloutStorageNonOracle"]
+__all__ = ["BaseTrainer", "BaseRLTrainerNonOracle", "BaseRLTrainerOracle", "PPOTrainerO", "RolloutStorage", "RolloutStorageOracle", "RolloutStorageNonOracle"]

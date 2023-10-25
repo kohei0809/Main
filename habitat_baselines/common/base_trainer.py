@@ -274,7 +274,7 @@ class BaseRLTrainerOracle(BaseTrainer):
                 self._eval_checkpoint(self.config.EVAL_CKPT_PATH_DIR, writer)
             else:
                 # evaluate multiple checkpoints in order
-                prev_ckpt_ind = 1223
+                prev_ckpt_ind = 34
                 while True:
                     current_ckpt = None
                     while current_ckpt is None:
@@ -366,6 +366,7 @@ class BaseRLTrainerOracle(BaseTrainer):
         not_done_masks,
         current_episode_reward,
         current_episode_exp_area,
+        current_episode_distance,
         current_episode_ci,
         prev_actions,
         batch,
@@ -385,6 +386,7 @@ class BaseRLTrainerOracle(BaseTrainer):
             not_done_masks = not_done_masks[state_index]
             current_episode_reward = current_episode_reward[state_index]
             current_episode_exp_area = current_episode_exp_area[state_index]
+            current_episode_distance = current_episode_distance[state_index]
             current_episode_ci = current_episode_ci[state_index]
             prev_actions = prev_actions[state_index]
 
@@ -399,6 +401,7 @@ class BaseRLTrainerOracle(BaseTrainer):
             not_done_masks,
             current_episode_reward,
             current_episode_exp_area,
+            current_episode_distance,
             current_episode_ci,
             prev_actions,
             batch,
