@@ -2,7 +2,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import pathlib
 
-date = "23-10-19 15-55-17"
+date = "23-10-22 11-38-41"
 #date = "23-10-09 16-02-33"
 
 mode = "train"

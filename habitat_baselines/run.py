@@ -120,10 +120,11 @@ def test():
     exp_config = "habitat_baselines/config/maximuminfo/ppo_maximuminfo.yaml"
     agent_type = "oracle-ego"
     run_type = "train"
+    run_type = "eval"
     start_date = datetime.datetime.now().strftime('%y-%m-%d %H-%M-%S') 
     
     if run_type == "eval":
-        datadate = "23-10-19 15-55-17"
+        datadate = "23-10-22 11-38-41"
     else:
        datadate = "" 
     
@@ -140,8 +141,8 @@ def test():
     config.CHECKPOINT_FOLDER = "cpt/" + start_date
     config.EVAL_CKPT_PATH_DIR = "cpt/" + datadate 
     #config.TEST_EPISODE_COUNT = 1000
-    config.VIDEO_OPTION = []
-    #config.VIDEO_OPTION = ["disk"]
+    #config.VIDEO_OPTION = []
+    config.VIDEO_OPTION = ["disk"]
     config.freeze()
     
     if agent_type in ["oracle", "oracle-ego", "no-map"]:

@@ -3,7 +3,7 @@ __pycache__/
 *.py[cod]
 
 *$py.class
-#map300.pickle
+map300.pickle
 
 send/
 xp/

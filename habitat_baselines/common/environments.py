@@ -145,7 +145,7 @@ class InfoRLEnv(RLEnv):
         self.fog_of_war_map_all = None
         observations = super().reset()
         self._previous_area = 0.0
-        self._previous_distance = 0.0
+        self._previous_distance = self._env.get_metrics()["distance_to_multi_goal"]
         
         return observations
 
