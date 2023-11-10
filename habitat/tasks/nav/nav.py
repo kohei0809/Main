@@ -1192,11 +1192,10 @@ class TopDownMap(Measure):
 
     def _draw_goals_positions(self, episode):
         if self._config.DRAW_GOAL_POSITIONS:
-
-            for goal in episode.goals:
+            for i, goal in enumerate(episode.goals):
                 try:
                     self._draw_point(
-                        goal.position, maps.MAP_TARGET_POINT_INDICATOR
+                        goal.position, maps.MAP_TARGET_POINT_INDICATOR+i
                     )
                 except AttributeError:
                     pass
@@ -1482,10 +1481,10 @@ class PictureRangeMap(Measure):
     def _draw_goals_positions(self, episode):
         if self._config.DRAW_GOAL_POSITIONS:
 
-            for goal in episode.goals:
+            for i, goal in enumerate(episode.goals):
                 try:
                     self._draw_point(
-                        goal.position, maps.MAP_TARGET_POINT_INDICATOR
+                        goal.position, maps.MAP_TARGET_POINT_INDICATOR+i
                     )
                 except AttributeError:
                     pass
@@ -1916,11 +1915,11 @@ class DistanceToMultiGoal(Measure):
                     episode.goals[goal_number].position, episode.goals[goal_number+1].position
                 )
             """
-            distance_to_target = 0.0
+            distance_to_target = []
             for goal_number in range(len(episode.goals)):
-                distance_to_target += self._sim.geodesic_distance(
+                distance_to_target.append(self._sim.geodesic_distance(
                     current_position, episode.goals[goal_number].position
-                )
+                ))
         else:
             logger.error(
                 f"Non valid DISTANCE_TO parameter was provided: {self._config.DISTANCE_TO}"

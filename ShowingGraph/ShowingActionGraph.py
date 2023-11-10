@@ -2,7 +2,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import pathlib
 
-date = "23-10-22 11-38-41"
+date = "23-10-26 18-29-56"
 mode = "train"
 
 df = pd.read_csv("log/" + date + "/" + mode + "/action_prob.csv", names=['time', 'take_picture', 'forward', 'left', 'right', 'look_up', 'look_down'], header=None)

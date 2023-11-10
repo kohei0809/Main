@@ -203,9 +203,9 @@ class InfoRLEnv(RLEnv):
         
         # distance_to_multi_goalの計算
         current_distance = self._env.get_metrics()["distance_to_multi_goal"]
-        distance = self._previous_distance - current_distance
-        reward += distance
+        out = self._previous_distance
         self._previous_distance = current_distance
+        
         
         # area_rewardの計算
         info = self.get_info(observations)
@@ -218,9 +218,6 @@ class InfoRLEnv(RLEnv):
         if self._take_picture():
             measure = self._env.get_metrics()[self._picture_measure_name]
             ci, matrics = measure[0], measure[1]
-
-        elif self._env.task.is_found_called and self._rl_config.FALSE_FOUND_PENALTY:
-            reward -= self._rl_config.FALSE_FOUND_PENALTY_VALUE
             
         # area_rewardを足す
         area_reward = current_area - self._previous_area
@@ -228,7 +225,7 @@ class InfoRLEnv(RLEnv):
         output = self._previous_area
         self._previous_area = current_area
 
-        return [reward, ci, current_area, output, distance], matrics
+        return [reward, ci, current_area, output, current_distance, out], matrics
     
     def get_polar_angle(self):
         agent_state = self._env._sim.get_agent_state()

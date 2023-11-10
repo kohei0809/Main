@@ -150,12 +150,12 @@ _C.TASK.PICTURE.TYPE = "Picture"
 # -----------------------------------------------------------------------------
 _C.TASK.CI = CN()
 _C.TASK.CI.TYPE = "CI"
-_C.TASK.CI.LOW_REGION_WEIGHT: 1.0
-_C.TASK.CI.MID_REGION_WEIGHT: 3.0
-_C.TASK.CI.HIGH_REGION_WEIGHT: 5.0
-_C.TASK.CI.LOW_CATEGORY_VALUE: -0.01
-_C.TASK.CI.MID_CATEGORY_VALUE: 1.0
-_C.TASK.CI.HIGH_CATEGORY_VALUE: 2.0
+_C.TASK.CI.LOW_REGION_WEIGHT = 1.0
+_C.TASK.CI.MID_REGION_WEIGHT = 3.0
+_C.TASK.CI.HIGH_REGION_WEIGHT = 5.0
+_C.TASK.CI.LOW_CATEGORY_VALUE = -0.01
+_C.TASK.CI.MID_CATEGORY_VALUE = 1.0
+_C.TASK.CI.HIGH_CATEGORY_VALUE = 2.0
 
 # -----------------------------------------------------------------------------
 # SUCCESS MEASUREMENT
@@ -178,17 +178,19 @@ _C.TASK.MSPL.TYPE = "MSPL"
 # -----------------------------------------------------------------------------
 _C.TASK.PSPL = CN()
 _C.TASK.PSPL.TYPE = "PSPL"
-
-### FOW ####
-
+# -----------------------------------------------------------------------------
+# FOW MAP
+# -----------------------------------------------------------------------------
 _C.TASK.FOW_MAP = CN()
 _C.TASK.FOW_MAP.TYPE = "FowMap"
 _C.TASK.FOW_MAP.VISIBILITY_DIST = 6.0
-_C.TASK.FOW_MAP.FOV = 80
-
+_C.TASK.FOW_MAP.FOV = 79
+# -----------------------------------------------------------------------------
+# PICTURE_MAP
+# -----------------------------------------------------------------------------
 _C.TASK.PICTURE_MAP = CN()
 _C.TASK.PICTURE_MAP.VISIBILITY_DIST = 6.0
-_C.TASK.PICTURE_MAP.FOV = 80
+_C.TASK.PICTURE_MAP.FOV = 79
 
 # -----------------------------------------------------------------------------
 # TopDownMap MEASUREMENT

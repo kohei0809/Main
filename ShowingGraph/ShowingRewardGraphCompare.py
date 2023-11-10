@@ -3,13 +3,11 @@ import matplotlib.pyplot as plt
 import pathlib
 
 
-date1 = "23-10-03 16-04-23"
-date2 = "23-10-03 14-28-11"
-date1 = "23-10-09 16-02-33"
-date2 = "23-10-10 13-36-40"
+date1 = "23-10-26 18-29-56"
+date2 = "23-10-26 19-48-15"
 
 mode = "train"
-mode = "eval"
+#mode = "eval"
 
 df1 = pd.read_csv("log/" + date1 + "/" + mode + "/reward.csv", names=['time', 'reward'], header=None)
 plt.plot(df1['time'], df1['reward'], color="blue", label="Picture")
@@ -21,8 +19,8 @@ plt.xlabel('Training Steps')
 plt.ylabel('Reward')
 
 #表示範囲の指定
-plt.xlim(0, 6000000)
-plt.ylim(0, 80)
+plt.xlim(0, 1200000)
+plt.ylim(0, 40)
 
 #凡例の追加
 plt.legend()

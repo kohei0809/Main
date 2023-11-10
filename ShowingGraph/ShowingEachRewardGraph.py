@@ -2,7 +2,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import pathlib
 
-date = "23-10-22 11-38-41"
+date = "23-10-26 18-29-56"
 #date = "23-10-09 16-02-33"
 
 mode = "train"
@@ -13,8 +13,8 @@ df2 = pd.read_csv("log/" + date + "/" + mode + "/metrics.csv", names=['time', 'c
 plt.plot(df1['time'], df1['reward'], color="red", label="reward")
 plt.plot(df2['time'], df2['ci'], color="blue", label="CI")
 plt.plot(df2['time'], df2['exp_area'], color="green", label="EXP_AREA")
-plt.plot(df2['time'], df2['distance'], color="black", label="distance")
-
+plt.plot(df2['time'], df1['reward']-df2['ci']-df2['exp_area'], color="black", label="distance")
+#plt.plot(df2['time'], df2['distance'], color="black", label="distance")
 
 
 #ラベルの追加
