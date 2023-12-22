@@ -15,6 +15,7 @@ import torch
 from habitat_baselines.common.baseline_registry import baseline_registry
 from habitat_baselines.config.default import get_config    
 from utils.log_manager import LogManager
+from habitat.core.logging import logger
 
 def main():
     parser = argparse.ArgumentParser()
@@ -119,12 +120,13 @@ def run_exp(exp_config: str, run_type: str, agent_type: str, opts=None) -> None:
 def test():
     exp_config = "habitat_baselines/config/maximuminfo/ppo_maximuminfo.yaml"
     agent_type = "oracle-ego"
-    run_type = "train"
-    #run_type = "eval"
+    #run_type = "train"
+    run_type = "eval"
     start_date = datetime.datetime.now().strftime('%y-%m-%d %H-%M-%S') 
     
     if run_type == "eval":
-        datadate = "23-10-26 18-29-56"
+        #datadate = "23-10-26 18-29-56"
+        datadate = "23-11-24 14-47-52"
     else:
        datadate = "" 
     
@@ -140,13 +142,15 @@ def test():
     config.TASK_CONFIG.TRAINER_NAME = agent_type
     config.CHECKPOINT_FOLDER = "cpt/" + start_date
     config.EVAL_CKPT_PATH_DIR = "cpt/" + datadate 
-    #config.TEST_EPISODE_COUNT = 1000
+    config.TEST_EPISODE_COUNT = 40
     #config.VIDEO_OPTION = []
     config.VIDEO_OPTION = ["disk"]
     config.freeze()
     
     if agent_type in ["oracle", "oracle-ego", "no-map"]:
         trainer_init = baseline_registry.get_trainer("oracle")
+        #trainer_init = baseline_registry.get_trainer("oracle2")
+        #trainer_init = baseline_registry.get_trainer("oracle3")
         config.defrost()
         config.RL.PPO.hidden_size = 512 if agent_type=="no-map" else 768
         config.TASK_CONFIG.SIMULATOR.DEPTH_SENSOR.NORMALIZE_DEPTH = False
@@ -174,9 +178,9 @@ def test():
         if torch.cuda.is_available()
         else torch.device("cpu")
     )
-    print("-----------------------------------")
-    print("device:" + str(device))
-    print("-----------------------------------")
+    logger.info("-----------------------------------")
+    logger.info("device:" + str(device))
+    logger.info("-----------------------------------")
 
     if run_type == "train":
         #フォルダがない場合は、作成

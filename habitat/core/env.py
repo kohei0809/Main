@@ -22,6 +22,9 @@ from habitat.datasets import make_dataset
 from habitat.sims import make_sim
 from habitat.tasks import make_task
 from habitat_baselines.common.utils import quat_from_angle_axis
+from habitat.core.logging import logger
+from utils.log_manager import LogManager
+from utils.log_writer import LogWriter
 
 import matplotlib.pyplot as plt
 
@@ -347,6 +350,14 @@ class Env:
             patch = patch[currPix[0]-40:currPix[0]+40, currPix[1]-40:currPix[1]+40,:]
             patch = ndimage.interpolation.rotate(patch, -(observations["heading"][0] * 180/np.pi) + 90, order=0, reshape=False)
             observations["semMap"] = patch[40-25:40+25, 40-25:40+25, :]
+            
+            log_manager = LogManager()
+            log_manager.setLogDirectory("semMap")
+            log_writer = log_manager.createLogWriter("semMap")
+            for i in range(observations["semMap"].shape[0]):
+                for j in range(observations["semMap"].shape[1]):
+                    log_writer.write(str(observations["semMap"][i][j][0]))
+                log_writer.writeLine() 
 
         self._update_step_stats()
         return observations

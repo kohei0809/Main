@@ -2,7 +2,7 @@ BASE_TASK_CONFIG_PATH: "configs/tasks/maximuminfo_mp3d.yaml"
 TRAINER_NAME: "ppo"
 ENV_NAME: "InfoRLEnv"
 SIMULATOR_GPU_ID: 0
-TORCH_GPU_ID: 3
+TORCH_GPU_ID: 1
 #VIDEO_OPTION: []
 VIDEO_OPTION: ["disk"]
 TENSORBOARD_DIR: "tb/train"
@@ -10,7 +10,7 @@ TENSORBOARD_DIR_EVAL: "eval"
 VIDEO_DIR: "video_dir"
 TEST_EPISODE_COUNT: 100
 EVAL_CKPT_PATH_DIR: "cpt"
-NUM_PROCESSES: 8
+NUM_PROCESSES: 40
 #NUM_PROCESSES: 1
 SENSORS: ["RGB_SENSOR", "DEPTH_SENSOR", "SEMANTIC_SENSOR"]
 CHECKPOINT_FOLDER: "cpt"
@@ -29,12 +29,13 @@ RL:
     clip_param: 0.2
     ppo_epoch: 2
     num_mini_batch: 4
+    #num_mini_batch: 1
     value_loss_coef: 0.5
     entropy_coef: 0.01
     lr: 2.5e-4
     eps: 1e-5
     max_grad_norm: 0.2
-    num_steps: 500
+    num_steps: 128
     use_gae: True
     gamma: 0.99
     tau: 0.95

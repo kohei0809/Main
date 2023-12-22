@@ -4,23 +4,23 @@ import pathlib
 
 
 date1 = "23-10-26 18-29-56"
-date2 = "23-10-26 19-48-15"
+date2 = "23-11-24 14-47-52"
 
 mode = "train"
 #mode = "eval"
 
 df1 = pd.read_csv("log/" + date1 + "/" + mode + "/reward.csv", names=['time', 'reward'], header=None)
-plt.plot(df1['time'], df1['reward'], color="blue", label="Picture")
+plt.plot(df1['time'], df1['reward'], color="blue", label="Accumulation")
 df2 = pd.read_csv("log/" + date2 + "/" + mode + "/reward.csv", names=['time', 'reward'], header=None)
-plt.plot(df2['time'], df2['reward'], color="red", label="Movie")
+plt.plot(df2['time'], df2['reward'], color="red", label="Individual")
 
 #ラベルの追加
 plt.xlabel('Training Steps')
 plt.ylabel('Reward')
 
 #表示範囲の指定
-plt.xlim(0, 1200000)
-plt.ylim(0, 40)
+plt.xlim(0, 2000000)
+plt.ylim(0, 55)
 
 #凡例の追加
 plt.legend()

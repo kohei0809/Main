@@ -213,7 +213,7 @@ class InfoRLEnv(RLEnv):
         _fog_of_war_map = info["top_down_map"]["fog_of_war_mask"]
         
         current_area = self._cal_explored_rate(_top_down_map, _fog_of_war_map)
-        current_area *= 10
+        current_area *= 100
 
         if self._take_picture():
             measure = self._env.get_metrics()[self._picture_measure_name]

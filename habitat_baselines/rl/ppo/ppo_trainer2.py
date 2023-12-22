@@ -152,15 +152,16 @@ def rotate_tensor(x_gp, heading):
     return rotated_x_gp
 
 
-# ciの閾値が単体
-@baseline_registry.register_trainer(name="oracle")
-class PPOTrainerO(BaseRLTrainerOracle):
+# ciの閾値が累積
+@baseline_registry.register_trainer(name="oracle2")
+class PPOTrainerO2(BaseRLTrainerOracle):
     r"""Trainer class for PPO algorithm
     Paper: https://arxiv.org/abs/1707.06347.
     """
     supported_tasks = ["Nav-v0"]
 
     def __init__(self, config=None):
+        logger.info("oracle2")
         super().__init__(config)
         self.actor_critic = None
         self.agent = None
@@ -177,16 +178,21 @@ class PPOTrainerO(BaseRLTrainerOracle):
         #撮った写真のciと位置情報、向きを保存
         self._taken_picture_list = []
         
-        # 1回のCIを保存
-        self._observed_object_ci_one = []
+        # 累計のCIを保存
+        self._observed_object_ci = []
         self._target_index_list = []
         self._taken_index_list = []
         
+        # 累計のCIの閾値
+        self.TARGET_THRESHOLD = 250
         # 1回のCIの閾値
         self.TARGET_THRESHOLD_ONE = 20
         
         self._dis_pre = []
-
+        
+        logger.info("oracle2")
+        # with open('mapDictFull.pickle', 'rb') as handle:
+            # self.mapCache = pickle.load(handle)
 
     def _setup_actor_critic_agent(self, ppo_cfg: Config) -> None:
         r"""Sets up actor critic and agent for PPO.
@@ -306,7 +312,7 @@ class PPOTrainerO(BaseRLTrainerOracle):
     
     def _delete_observed_target(self, n):
         for i in self._target_index_list[n]:
-            if self._observed_object_ci_one[n][i-maps.MAP_TARGET_POINT_INDICATOR] > self.TARGET_THRESHOLD_ONE:
+            if self._observed_object_ci[n][i-maps.MAP_TARGET_POINT_INDICATOR] > self.TARGET_THRESHOLD:
                 self._target_index_list[n].remove(i)
 
     
@@ -319,7 +325,7 @@ class PPOTrainerO(BaseRLTrainerOracle):
                     if fog_of_war_map[n][i][j] == 1:
                         if top_down_map[n][i][j] in self._target_index_list[n]:
                             ci += 1
-                            self._observed_object_ci_one[n][top_down_map[n][i][j]-maps.MAP_TARGET_POINT_INDICATOR]+=1
+                            self._observed_object_ci[n][top_down_map[n][i][j]-maps.MAP_TARGET_POINT_INDICATOR]+=1
                             #if top_down_map[n][i][j] not in self._taken_index_list[n]:
                             #self._taken_index_list[n].append(top_down_map[n][i][j])
 
@@ -329,7 +335,7 @@ class PPOTrainerO(BaseRLTrainerOracle):
         # もし全部のobjectが削除されたら、リセット
         if len(self._target_index_list[n]) == 0:
             self._target_index_list[n] = [maps.MAP_TARGET_POINT_INDICATOR, maps.MAP_TARGET_POINT_INDICATOR+1, maps.MAP_TARGET_POINT_INDICATOR+2]
-            self._observed_object_ci_one[n] = [0, 0, 0]
+            self._observed_object_ci[n] = [0, 0, 0]
             
         return ci
         
@@ -518,6 +524,7 @@ class PPOTrainerO(BaseRLTrainerOracle):
                 self._dis_pre[n] = -1
                 self._target_index_list[n] = [maps.MAP_TARGET_POINT_INDICATOR, maps.MAP_TARGET_POINT_INDICATOR+1, maps.MAP_TARGET_POINT_INDICATOR+2]
                 
+                self._observed_object_ci[n] = [0, 0, 0]
 
         current_episode_reward += reward
         running_episode_stats["reward"] += (1 - masks) * current_episode_reward
@@ -624,7 +631,7 @@ class PPOTrainerO(BaseRLTrainerOracle):
             #self._taken_picture.append([])
             self._taken_picture_list.append([])
             self._target_index_list.append([maps.MAP_TARGET_POINT_INDICATOR, maps.MAP_TARGET_POINT_INDICATOR+1, maps.MAP_TARGET_POINT_INDICATOR+2])
-            self._observed_object_ci_one.append([0, 0, 0])
+            self._observed_object_ci.append([0, 0, 0])
             self._dis_pre.append(-1)
 
         ppo_cfg = self.config.RL.PPO
@@ -703,10 +710,6 @@ class PPOTrainerO(BaseRLTrainerOracle):
             for step in range(ppo_cfg.num_steps):
                 if (step + update*ppo_cfg.num_steps) % 500 == 0:
                     print("STEP: " + str(step + update*ppo_cfg.num_steps))
-                    
-                # 毎ステップ初期化する
-                for n in range(self.envs.num_envs):
-                    self._observed_object_ci_one[n] = [0, 0, 0]
                     
                 (
                     delta_pth_time,
@@ -942,8 +945,8 @@ class PPOTrainerO(BaseRLTrainerOracle):
         
         # Map location CPU is almost always better than mapping to a CUDA device.
         ckpt_dict = self.load_checkpoint(checkpoint_path, map_location="cpu")
-        print("PATH")
-        print(checkpoint_path)
+        logger.info("PATH")
+        logger.info(checkpoint_path)
 
         if self.config.EVAL.USE_CKPT_CONFIG:
             config = self._setup_eval_config(ckpt_dict["config"])
@@ -973,15 +976,15 @@ class PPOTrainerO(BaseRLTrainerOracle):
         self._taken_picture_list = []
         self._target_index_list = []
         self._taken_index_list = []
-        # 1回のCIを保存
-        self._observed_object_ci_one = []
+        # 累計のCIを保存
+        self._observed_object_ci = []
         
         for i in range(self.envs.num_envs):
             self._taken_picture.append([])
             self._taken_picture_list.append([])
             self._target_index_list.append([maps.MAP_TARGET_POINT_INDICATOR, maps.MAP_TARGET_POINT_INDICATOR+1, maps.MAP_TARGET_POINT_INDICATOR+2])
             self._taken_index_list.append([])
-            self._observed_object_ci_one.append([0, 0, 0])
+            self._observed_object_ci.append([0, 0, 0])
             self._dis_pre.append(-1)
         
         observations = self.envs.reset()
@@ -1057,9 +1060,6 @@ class PPOTrainerO(BaseRLTrainerOracle):
                 dtype=torch.float,
                 device=self.device,
             )
-            
-            for n in range(self.envs.num_envs):
-                self._observed_object_ci_one[n] = [0, 0, 0] 
             
             reward = []
             ci = []
@@ -1323,6 +1323,7 @@ class PPOTrainerO(BaseRLTrainerOracle):
                     self._taken_picture_list[i] = []
                     self._target_index_list[i] = [maps.MAP_TARGET_POINT_INDICATOR, maps.MAP_TARGET_POINT_INDICATOR+1, maps.MAP_TARGET_POINT_INDICATOR+2]
                     self._taken_index_list[i] = []
+                    self._observed_object_ci[i] = [0, 0, 0]
                     self._dis_pre[i] = -1
 
                 # episode continues
