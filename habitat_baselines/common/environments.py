@@ -146,6 +146,7 @@ class InfoRLEnv(RLEnv):
         observations = super().reset()
         self._previous_area = 0.0
         self._previous_distance = self._env.get_metrics()["distance_to_multi_goal"]
+        self._previous_distance *= 5
         
         return observations
 
@@ -203,9 +204,9 @@ class InfoRLEnv(RLEnv):
         
         # distance_to_multi_goalの計算
         current_distance = self._env.get_metrics()["distance_to_multi_goal"]
+        current_distance *= 5
         out = self._previous_distance
         self._previous_distance = current_distance
-        
         
         # area_rewardの計算
         info = self.get_info(observations)
@@ -213,7 +214,7 @@ class InfoRLEnv(RLEnv):
         _fog_of_war_map = info["top_down_map"]["fog_of_war_mask"]
         
         current_area = self._cal_explored_rate(_top_down_map, _fog_of_war_map)
-        current_area *= 100
+        current_area *= 50
 
         if self._take_picture():
             measure = self._env.get_metrics()[self._picture_measure_name]

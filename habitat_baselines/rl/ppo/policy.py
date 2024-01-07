@@ -232,6 +232,7 @@ class BaselineNetOracle(Net):
         if self.agent_type != "no-map":
             global_map_embedding = []
             global_map = observations['semMap']
+            #logger.info("global shape: " + str(global_map.shape))
             if self.agent_type == "oracle":
                 global_map_embedding.append(self.occupancy_embedding(global_map[:, :, :, 0].type(torch.LongTensor).to(self.device).view(-1)).view(bs, 50, 50 , -1))
             global_map_embedding.append(self.object_embedding(global_map[:, :, :, 1].type(torch.LongTensor).to(self.device).view(-1)).view(bs, 50, 50, -1))

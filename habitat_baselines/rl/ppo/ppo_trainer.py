@@ -184,8 +184,6 @@ class PPOTrainerO(BaseRLTrainerOracle):
         
         # 1回のCIの閾値
         self.TARGET_THRESHOLD_ONE = 20
-        
-        self._dis_pre = []
 
 
     def _setup_actor_critic_agent(self, ppo_cfg: Config) -> None:
@@ -393,16 +391,13 @@ class PPOTrainerO(BaseRLTrainerOracle):
             
             # multi goal distanceの計算
             dis = 0.0
-            if self._dis_pre[i] == -1:
-                self._dis_pre[i] = 0
-                for j in range(3):
-                    self._dis_pre[i] += rewards[i][0][5][j]
+            dis_pre = 0
             for j in self._target_index_list[i]:
+                dis_pre += rewards[i][0][5][j-maps.MAP_TARGET_POINT_INDICATOR]
                 dis += rewards[i][0][4][j-maps.MAP_TARGET_POINT_INDICATOR]
             
-            reward[i] += self._dis_pre[i] - dis
-            distance.append(self._dis_pre[i] - dis)
-            self._dis_pre[i] = dis
+            reward[i] += dis_pre - dis
+            distance.append(dis_pre - dis)
             
         
         for n in range(len(observations)):
@@ -515,7 +510,6 @@ class PPOTrainerO(BaseRLTrainerOracle):
                 """
                 #self._taken_picture[n] = []
                 self._taken_picture_list[n] = []
-                self._dis_pre[n] = -1
                 self._target_index_list[n] = [maps.MAP_TARGET_POINT_INDICATOR, maps.MAP_TARGET_POINT_INDICATOR+1, maps.MAP_TARGET_POINT_INDICATOR+2]
                 
 
@@ -625,7 +619,6 @@ class PPOTrainerO(BaseRLTrainerOracle):
             self._taken_picture_list.append([])
             self._target_index_list.append([maps.MAP_TARGET_POINT_INDICATOR, maps.MAP_TARGET_POINT_INDICATOR+1, maps.MAP_TARGET_POINT_INDICATOR+2])
             self._observed_object_ci_one.append([0, 0, 0])
-            self._dis_pre.append(-1)
 
         ppo_cfg = self.config.RL.PPO
         self.device = (
@@ -982,7 +975,6 @@ class PPOTrainerO(BaseRLTrainerOracle):
             self._target_index_list.append([maps.MAP_TARGET_POINT_INDICATOR, maps.MAP_TARGET_POINT_INDICATOR+1, maps.MAP_TARGET_POINT_INDICATOR+2])
             self._taken_index_list.append([])
             self._observed_object_ci_one.append([0, 0, 0])
-            self._dis_pre.append(-1)
         
         observations = self.envs.reset()
         batch = batch_obs(observations, device=self.device)
@@ -1084,16 +1076,13 @@ class PPOTrainerO(BaseRLTrainerOracle):
                 
                 # multi goal distanceの計算
                 dis = 0.0
-                if self._dis_pre[i] == -1:
-                    self._dis_pre[i] = 0
-                    for j in range(3):
-                        self._dis_pre[i] += rewards[i][0][5][j]
+                dis_pre = 0
                 for j in self._target_index_list[i]:
+                    dis_pre += rewards[i][0][5][j-maps.MAP_TARGET_POINT_INDICATOR]
                     dis += rewards[i][0][4][j-maps.MAP_TARGET_POINT_INDICATOR]
             
-                reward[i] += self._dis_pre[i] - dis
-                distance.append(self._dis_pre[i] - dis)
-                self._dis_pre[i] = dis
+                reward[i] += dis_pre - dis
+                distance.append(dis_pre - dis)
             
             for n in range(len(observations)):
             #TAKE_PICTUREが呼び出されたかを検証
@@ -1323,7 +1312,6 @@ class PPOTrainerO(BaseRLTrainerOracle):
                     self._taken_picture_list[i] = []
                     self._target_index_list[i] = [maps.MAP_TARGET_POINT_INDICATOR, maps.MAP_TARGET_POINT_INDICATOR+1, maps.MAP_TARGET_POINT_INDICATOR+2]
                     self._taken_index_list[i] = []
-                    self._dis_pre[i] = -1
 
                 # episode continues
                 elif len(self.config.VIDEO_OPTION) > 0:

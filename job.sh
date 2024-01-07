@@ -2,7 +2,7 @@
 #$ -cwd
 #$ -l f_node=1
 #$ -j y
-#$ -l h_rt=:20:00:00
+#$ -l h_rt=:95:30:00
 #$ -o output/o.$JOB_ID
 
 source ~/anaconda3/etc/profile.d/conda.sh

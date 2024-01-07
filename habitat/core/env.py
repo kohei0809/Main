@@ -353,11 +353,17 @@ class Env:
             
             log_manager = LogManager()
             log_manager.setLogDirectory("semMap")
-            log_writer = log_manager.createLogWriter("semMap")
+            log_writer = log_manager.createLogWriter("semMap_eval")
+            log_writer2 = log_manager.createLogWriter("semMap_eval2")
+            #logger.info("SHAPE: " + str(observations["semMap"].shape))
+            """
             for i in range(observations["semMap"].shape[0]):
                 for j in range(observations["semMap"].shape[1]):
                     log_writer.write(str(observations["semMap"][i][j][0]))
+                    log_writer2.write(str(observations["semMap"][i][j][1]))
                 log_writer.writeLine() 
+                log_writer2.writeLine() 
+            """
 
         self._update_step_stats()
         return observations

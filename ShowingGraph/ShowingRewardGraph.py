@@ -4,7 +4,7 @@ import pathlib
 
 date = "23-10-26 18-29-56"
 date = "23-12-11 22-34-18"
-#date = "23-10-09 16-02-33"
+date = "23-12-22 23-13-05"
 
 mode = "train"
 #mode = "eval"

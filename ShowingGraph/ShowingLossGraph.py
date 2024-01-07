@@ -2,7 +2,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import pathlib
 
-date = "23-10-26 18-29-56"
+date = "23-12-22 23-13-05"
 
 df = pd.read_csv("log/" + date + "/train/loss.csv", names=['time', 'loss_value', 'loss_policy'], header=None)
 plt.plot(df['time'], df['loss_value'], color="red", label="loss_value")
