@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 import pathlib
 
 date = "23-12-22 23-13-05"
+date = "24-01-08 12-14-22"
 
 df = pd.read_csv("log/" + date + "/train/loss.csv", names=['time', 'loss_value', 'loss_policy'], header=None)
 plt.plot(df['time'], df['loss_value'], color="red", label="loss_value")

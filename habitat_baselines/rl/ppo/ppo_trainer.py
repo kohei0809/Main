@@ -202,7 +202,9 @@ class PPOTrainerO(BaseRLTrainerOracle):
             observation_space=self.envs.observation_spaces[0],
             action_space=self.envs.action_spaces[0],
             hidden_size=ppo_cfg.hidden_size,
+            goal_sensor_uuid=self.config.TASK_CONFIG.TASK.GOAL_SENSOR_UUID,
             device=self.device,
+            object_category_embedding_size=self.config.RL.OBJECT_CATEGORY_EMBEDDING_SIZE,
             previous_action_embedding_size=self.config.RL.PREVIOUS_ACTION_EMBEDDING_SIZE,
             use_previous_action=self.config.RL.PREVIOUS_ACTION
         )
@@ -302,10 +304,13 @@ class PPOTrainerO(BaseRLTrainerOracle):
         return results
     
     
-    def _delete_observed_target(self, n):
+    def _delete_observed_target(self, n, object_num):
         for i in self._target_index_list[n]:
             if self._observed_object_ci_one[n][i-maps.MAP_TARGET_POINT_INDICATOR] > self.TARGET_THRESHOLD_ONE:
                 self._target_index_list[n].remove(i)
+                object_num += 1
+                
+        return object_num
 
     
     def _do_take_picture_object(self, top_down_map, fog_of_war_map, n):
@@ -322,18 +327,18 @@ class PPOTrainerO(BaseRLTrainerOracle):
                             #self._taken_index_list[n].append(top_down_map[n][i][j])
 
         # ciが閾値を超えているobjectがあれば削除
-        self._delete_observed_target(n)
+        object_num = self._delete_observed_target(n, object_num)
         
         # もし全部のobjectが削除されたら、リセット
         if len(self._target_index_list[n]) == 0:
             self._target_index_list[n] = [maps.MAP_TARGET_POINT_INDICATOR, maps.MAP_TARGET_POINT_INDICATOR+1, maps.MAP_TARGET_POINT_INDICATOR+2]
             self._observed_object_ci_one[n] = [0, 0, 0]
             
-        return ci
+        return ci, object_num
         
 
     def _collect_rollout_step(
-        self, rollouts, current_episode_reward, current_episode_exp_area, current_episode_distance, current_episode_ci, running_episode_stats
+        self, rollouts, current_episode_reward, current_episode_exp_area, current_episode_distance, current_episode_ci, current_episode_object_num, running_episode_stats
     ):
         pth_time = 0.0
         env_time = 0.0
@@ -378,6 +383,7 @@ class PPOTrainerO(BaseRLTrainerOracle):
         fog_of_war_map = []
         top_down_map = [] 
         top_map = []
+        object_num = []
         n_envs = self.envs.num_envs
         for i in range(n_envs):
             reward.append(rewards[i][0][0])
@@ -407,7 +413,7 @@ class PPOTrainerO(BaseRLTrainerOracle):
                 cover_list = [] 
                 picture_range_map = self._create_picture_range_map(top_down_map[n], fog_of_war_map[n])
                 
-                ci[n] = self._do_take_picture_object(top_map, fog_of_war_map, n)
+                ci[n], object_num[n] = self._do_take_picture_object(top_map, fog_of_war_map, n)
                 
                 if ci[n] == 0:
                     continue
@@ -473,17 +479,17 @@ class PPOTrainerO(BaseRLTrainerOracle):
         reward = torch.tensor(
             reward, dtype=torch.float, device=current_episode_reward.device
         ).unsqueeze(1)
-        exp_area = np.array(exp_area)
         exp_area = torch.tensor(
            exp_area, dtype=torch.float, device=current_episode_reward.device
         ).unsqueeze(1)
-        ci = np.array(ci)
-        ci= torch.tensor(
+        ci = torch.tensor(
            ci, dtype=torch.float, device=current_episode_reward.device
         ).unsqueeze(1)
-        distance = np.array(distance)
         distance = torch.tensor(
            distance, dtype=torch.float, device=current_episode_reward.device
+        ).unsqueeze(1)
+        object_num = torch.tensor(
+           object_num, dtype=torch.float, device=current_episode_reward.device
         ).unsqueeze(1)
         
 
@@ -522,6 +528,7 @@ class PPOTrainerO(BaseRLTrainerOracle):
         running_episode_stats["count"] += 1 - masks
         current_episode_ci += ci
         running_episode_stats["ci"] += (1 - masks) * current_episode_ci
+        running_episode_stats["object_num"] += (1 - masks) * current_episode_object_num
 
         for k, v in self._extract_scalars_from_infos(infos).items():
             v = torch.tensor(
@@ -539,6 +546,7 @@ class PPOTrainerO(BaseRLTrainerOracle):
         current_episode_exp_area *= masks
         current_episode_distance *= masks
         current_episode_ci *= masks
+        current_episode_object_num *= masks
 
         if self._static_encoder:
             with torch.no_grad():
@@ -660,12 +668,14 @@ class PPOTrainerO(BaseRLTrainerOracle):
         current_episode_exp_area = torch.zeros(self.envs.num_envs, 1, device=self.device)
         current_episode_distance = torch.zeros(self.envs.num_envs, 1, device=self.device)
         current_episode_ci = torch.zeros(self.envs.num_envs, 1, device=self.device)
+        current_episode_object_num = torch.zeros(self.envs.num_envs, 1, device=self.device)
         running_episode_stats = dict(
             count=torch.zeros(self.envs.num_envs, 1, device=current_episode_reward.device),
             reward=torch.zeros(self.envs.num_envs, 1, device=current_episode_reward.device),
             exp_area=torch.zeros(self.envs.num_envs, 1, device=current_episode_reward.device),
             distance=torch.zeros(self.envs.num_envs, 1, device=current_episode_reward.device),
             ci=torch.zeros(self.envs.num_envs, 1, device=current_episode_reward.device),
+            object_num=torch.zeros(self.envs.num_envs, 1, device=current_episode_reward.device),
         )
         window_episode_stats = defaultdict(
             lambda: deque(maxlen=ppo_cfg.reward_window_size)
@@ -706,7 +716,7 @@ class PPOTrainerO(BaseRLTrainerOracle):
                     delta_env_time,
                     delta_steps,
                 ) = self._collect_rollout_step(
-                    rollouts, current_episode_reward, current_episode_exp_area, current_episode_distance, current_episode_ci, running_episode_stats
+                    rollouts, current_episode_reward, current_episode_exp_area, current_episode_distance, current_episode_ci, current_episode_object_num, running_episode_stats
                 )
                 pth_time += delta_pth_time
                 env_time += delta_env_time
@@ -765,8 +775,9 @@ class PPOTrainerO(BaseRLTrainerOracle):
             if len(metrics) > 0:
                 logger.info("COUNT: " + str(deltas["count"]))
                 logger.info("CI:" + str(metrics["ci"]))
+                logger.info("OBJECT_NUM: " + str(metrics["object_num"]))
                 logger.info("REWARD: " + str(deltas["reward"] / deltas["count"]))
-                metrics_logger.writeLine(str(count_steps) + "," +str(metrics["ci"]) + "," + str(metrics["exp_area"]) + "," + str(metrics["distance"]) + "," + str(metrics["raw_metrics.agent_path_length"]))
+                metrics_logger.writeLine(str(count_steps) + "," +str(metrics["ci"]) + "," + str(metrics["exp_area"]) + "," + str(metrics["distance"]) + "," + str(metrics["raw_metrics.agent_path_length"]) + "," + str(metrics["object_num"]))
                     
                 logger.info(metrics)
             
@@ -991,6 +1002,9 @@ class PPOTrainerO(BaseRLTrainerOracle):
         current_episode_ci = torch.zeros(
             self.envs.num_envs, 1, device=self.device
         )
+        current_episode_object_num = torch.zeros(
+            self.envs.num_envs, 1, device=self.device
+        )
         
         test_recurrent_hidden_states = torch.zeros(
             self.actor_critic.net.num_recurrent_layers,
@@ -1062,6 +1076,7 @@ class PPOTrainerO(BaseRLTrainerOracle):
             fog_of_war_map = []
             top_down_map = [] 
             top_map = []
+            object_num = []
             n_envs = self.envs.num_envs
             
             for i in range(n_envs):
@@ -1091,7 +1106,7 @@ class PPOTrainerO(BaseRLTrainerOracle):
                     cover_list = [] 
                     picture_range_map = self._create_picture_range_map(top_down_map[n], fog_of_war_map[n])
                     
-                    ci[n] = self._do_take_picture_object(top_map, fog_of_war_map, n)
+                    ci[n], object_num[n] = self._do_take_picture_object(top_map, fog_of_war_map, n)
                     
                     #########################
                     if ci[n] == 0:
@@ -1173,11 +1188,15 @@ class PPOTrainerO(BaseRLTrainerOracle):
             ci= torch.tensor(
                 ci, dtype=torch.float, device=self.device
             ).unsqueeze(1)
+            object_num = torch.tensor(
+                object_num, dtype=torch.float, device=self.device
+            ).unsqueeze(1)
 
             current_episode_reward += reward
             current_episode_exp_area += exp_area
             current_episode_distance += distance
             current_episode_ci += ci
+            current_episode_object_num += object_num
             next_episodes = self.envs.current_episodes()
             envs_to_pause = []
 
@@ -1211,6 +1230,7 @@ class PPOTrainerO(BaseRLTrainerOracle):
                     episode_stats["exp_area"] = current_episode_exp_area[i].item()
                     episode_stats["distance"] = current_episode_distance[i].item()
                     episode_stats["ci"] = current_episode_ci[i].item()
+                    episode_stats["object_num"] = current_episode_object_num[i].item()
                     
                     episode_stats.update(
                         self._extract_scalars_from_info(infos[i])
@@ -1219,6 +1239,7 @@ class PPOTrainerO(BaseRLTrainerOracle):
                     current_episode_exp_area[i] = 0
                     current_episode_distance[i] = 0
                     current_episode_ci[i] = 0
+                    current_episode_object_num[i] = 0
                     # use scene_id + episode_id as unique id for storing stats
                     stats_episodes[
                         (
@@ -1326,6 +1347,7 @@ class PPOTrainerO(BaseRLTrainerOracle):
                 current_episode_exp_area,
                 current_episode_distance,
                 current_episode_ci,
+                current_episode_object_num,
                 prev_actions,
                 batch,
                 rgb_frames,
@@ -1338,6 +1360,7 @@ class PPOTrainerO(BaseRLTrainerOracle):
                 current_episode_exp_area,
                 current_episode_distance,
                 current_episode_ci,
+                current_episode_object_num,
                 prev_actions,
                 batch,
                 rgb_frames,
@@ -1366,6 +1389,6 @@ class PPOTrainerO(BaseRLTrainerOracle):
         metrics = {k: v for k, v in aggregated_stats.items() if k != "reward"}
 
         logger.info("CI:" + str(metrics["ci"]))
-        eval_metrics_logger.writeLine(str(step_id) + "," + str(metrics["ci"]) + "," + str(metrics["exp_area"]) + "," + str(metrics["distance"]) + "," + str(metrics["raw_metrics.agent_path_length"]))
+        eval_metrics_logger.writeLine(str(step_id) + "," + str(metrics["ci"]) + "," + str(metrics["exp_area"]) + "," + str(metrics["distance"]) + "," + str(metrics["raw_metrics.agent_path_length"]) + "," + str(metrics["object_num"]))
 
         self.envs.close()

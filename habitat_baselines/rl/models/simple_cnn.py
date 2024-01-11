@@ -167,7 +167,8 @@ class MapCNN(nn.Module):
     def __init__(self, map_size, output_size, agent_type):
         super().__init__()
        
-        self._n_input_map = 16 if agent_type == "oracle-ego" else 32
+        #self._n_input_map = 16 if agent_type == "oracle-ego" else 32
+        self._n_input_map = 32
 
 
         if agent_type in ["oracle", "oracle-ego", "no-map"]:

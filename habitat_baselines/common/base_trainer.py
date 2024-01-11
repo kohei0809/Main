@@ -93,7 +93,7 @@ class BaseRLTrainerOracle(BaseTrainer):
                 self._eval_checkpoint(self.config.EVAL_CKPT_PATH_DIR, writer)
             else:
                 # evaluate multiple checkpoints in order
-                prev_ckpt_ind = 507
+                prev_ckpt_ind = 417
                 while True:
                     current_ckpt = None
                     while current_ckpt is None:

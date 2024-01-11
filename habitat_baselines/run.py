@@ -121,16 +121,17 @@ def test():
     exp_config = "habitat_baselines/config/maximuminfo/ppo_maximuminfo.yaml"
     agent_type = "oracle-ego"
     run_type = "train"
-    #run_type = "eval"
+    run_type = "eval"
     start_date = datetime.datetime.now().strftime('%y-%m-%d %H-%M-%S') 
     
     config = get_config(exp_config)
     
     if run_type == "eval":
         #datadate = "23-10-26 18-29-56"
-        datadate = "23-12-22 23-13-05"
+        #datadate = "23-12-22 23-13-05"
+        datadate = "24-01-08 12-14-22"
         config.defrost()
-        config.NUM_PROCESSES = 1
+        config.NUM_PROCESSES = 60
         config.freeze()
     else:
        datadate = "" 

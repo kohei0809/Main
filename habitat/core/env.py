@@ -257,8 +257,8 @@ class Env:
         # Remove existing objects from last episode
         for objid in self._sim._sim.get_existing_object_ids():  
             self._sim._sim.remove_object(objid)
-            
-         # Insert object here
+
+        # Insert object here
         object_to_datset_mapping = {'cylinder_red':0, 'cylinder_green':1, 'cylinder_blue':2,
             'cylinder_yellow':3, 'cylinder_white':4, 'cylinder_pink':5, 'cylinder_black':6, 'cylinder_cyan':7
         }
@@ -281,6 +281,13 @@ class Env:
         )
 
         if self._config.TRAINER_NAME in ["oracle", "oracle-ego"]:
+            for i in range(len(self.current_episode.goals)):
+                loc0 = self.current_episode.goals[i].position[0]
+                loc2 = self.current_episode.goals[i].position[2]
+                grid_loc = self.conv_grid(loc0, loc2)
+                objIndexOffset = 1 if self._config.TRAINER_NAME == "oracle" else 2
+                self.currMap[grid_loc[0]-1:grid_loc[0]+2, grid_loc[1]-1:grid_loc[1]+2, 1] = object_to_datset_mapping[self.current_episode.goals[i].object_category] + objIndexOffset
+
             currPix = self.conv_grid(observations["agent_position"][0], observations["agent_position"][2])  ## Explored area marking
 
             if self._config.TRAINER_NAME == "oracle-ego":
@@ -294,6 +301,30 @@ class Env:
             patch = patch[currPix[0]-40:currPix[0]+40, currPix[1]-40:currPix[1]+40,:]
             patch = ndimage.interpolation.rotate(patch, -(observations["heading"][0] * 180/np.pi) + 90, order=0, reshape=False)
             observations["semMap"] = patch[40-25:40+25, 40-25:40+25, :]
+            
+            """
+            log_manager = LogManager()
+            log_manager.setLogDirectory("semMap")
+        
+            for l in range(self.currMap.shape[2]):
+                log_writer = log_manager.createLogWriter("currMap_" + str(l))
+                for k in range(self.currMap.shape[1]):
+                    for j in range(self.currMap.shape[0]):
+                        log_writer.write(str(self.currMap[j, k, l]))
+                    log_writer.writeLine()
+            
+            logger.info("currMap")
+        
+            for l in range(observations["semMap"].shape[2]):
+                log_writer = log_manager.createLogWriter("globalMap_" + str(l))
+                for k in range(observations["semMap"].shape[1]):
+                    for j in range(observations["semMap"].shape[0]):
+                        log_writer.write(str(observations["semMap"][j, k, l]))
+                    log_writer.writeLine()
+                    
+            logger.info("globalMap")
+            """
+                        
         return observations
 
     def _update_step_stats(self) -> None:
