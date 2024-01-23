@@ -298,34 +298,43 @@ class Env:
             elif self._config.TRAINER_NAME == "oracle":
                 patch = self.currMap
 
+            
             patch = patch[currPix[0]-40:currPix[0]+40, currPix[1]-40:currPix[1]+40,:]
             patch = ndimage.interpolation.rotate(patch, -(observations["heading"][0] * 180/np.pi) + 90, order=0, reshape=False)
             observations["semMap"] = patch[40-25:40+25, 40-25:40+25, :]
-            
             """
-            log_manager = LogManager()
-            log_manager.setLogDirectory("semMap")
-        
-            for l in range(self.currMap.shape[2]):
-                log_writer = log_manager.createLogWriter("currMap_" + str(l))
-                for k in range(self.currMap.shape[1]):
-                    for j in range(self.currMap.shape[0]):
-                        log_writer.write(str(self.currMap[j, k, l]))
-                    log_writer.writeLine()
-            
-            logger.info("currMap")
-        
-            for l in range(observations["semMap"].shape[2]):
-                log_writer = log_manager.createLogWriter("globalMap_" + str(l))
-                for k in range(observations["semMap"].shape[1]):
-                    for j in range(observations["semMap"].shape[0]):
-                        log_writer.write(str(observations["semMap"][j, k, l]))
-                    log_writer.writeLine()
-                    
-            logger.info("globalMap")
-            """
-                        
+
+            #patch = patch[currPix[0]-70:currPix[0]+70, currPix[1]-70:currPix[1]+70,:]
+            patch_ = self.create_egocentric_map(patch, currPix, 70)
+            patch = ndimage.interpolation.rotate(patch_, -(observations["heading"][0] * 180/np.pi) + 90, order=0, reshape=False)
+            observations["semMap_mini"] = self.resize_semMap(patch_[70-25:70+25, 70-25:70+25, :], 50, 100)
+            observations["semMap_big"] = patch_[70-50:70+50, 70-50:70+50, :]
+            """             
         return observations
+    
+    def create_egocentric_map(self, patch, currPix, clip_range):
+        res = np.zeros((patch.shape[0]*2, patch.shape[1]*2, patch.shape[2]))
+        left_x = max(0, currPix[0]-clip_range)
+        right_x = min(currPix[0]+clip_range, patch.shape[0])
+        left_y = max(0, currPix[1]-clip_range)
+        right_y = min(currPix[1]+clip_range, patch.shape[1])
+            
+        res[0:(right_x-left_x), 0:(right_y-left_y), :] = patch[left_x:right_x, left_y:right_y, :]
+        
+        return res
+        
+           
+    def resize_semMap(self, patch, old_size, new_size):
+        rate = int(new_size / old_size)
+        new_semMap = np.zeros((new_size, new_size, 3))
+        
+        for i in range(old_size):
+            for j in range(old_size):
+                for k in range(3):
+                    value = patch[i, j, k]
+                    new_semMap[rate*i:rate*(i+1), rate*j:rate*(j+1), k] = value
+
+        return new_semMap
 
     def _update_step_stats(self) -> None:
         self._elapsed_steps += 1
@@ -378,22 +387,17 @@ class Env:
                 patch = self.currMap * self.expose
             elif self._config.TRAINER_NAME == "oracle":
                 patch = self.currMap
+                
+            
             patch = patch[currPix[0]-40:currPix[0]+40, currPix[1]-40:currPix[1]+40,:]
             patch = ndimage.interpolation.rotate(patch, -(observations["heading"][0] * 180/np.pi) + 90, order=0, reshape=False)
             observations["semMap"] = patch[40-25:40+25, 40-25:40+25, :]
-            
-            log_manager = LogManager()
-            log_manager.setLogDirectory("semMap")
-            log_writer = log_manager.createLogWriter("semMap_eval")
-            log_writer2 = log_manager.createLogWriter("semMap_eval2")
-            #logger.info("SHAPE: " + str(observations["semMap"].shape))
+
             """
-            for i in range(observations["semMap"].shape[0]):
-                for j in range(observations["semMap"].shape[1]):
-                    log_writer.write(str(observations["semMap"][i][j][0]))
-                    log_writer2.write(str(observations["semMap"][i][j][1]))
-                log_writer.writeLine() 
-                log_writer2.writeLine() 
+            patch_ = self.create_egocentric_map(patch, currPix, 70)
+            patch = ndimage.interpolation.rotate(patch_, -(observations["heading"][0] * 180/np.pi) + 90, order=0, reshape=False)
+            observations["semMap_mini"] = self.resize_semMap(patch_[70-25:70+25, 70-25:70+25, :], 50, 100)
+            observations["semMap_big"] = patch_[70-50:70+50, 70-50:70+50, :]
             """
 
         self._update_step_stats()

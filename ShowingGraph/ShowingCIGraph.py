@@ -6,11 +6,12 @@ date = "23-10-26 18-29-56"
 date = "23-12-11 22-34-18"
 date = "23-12-22 23-13-05"
 date = "24-01-08 12-14-22"
+date = "24-01-13 12-21-17"
 
 mode = "train"
 #mode = "eval"
 
-df = pd.read_csv("log/" + date + "/" + mode + "/metrics.csv", names=['time', 'ci', 'exp_area', 'distance', 'path_length'], header=None)
+df = pd.read_csv("log/" + date + "/" + mode + "/metrics.csv", names=['time', 'ci', 'exp_area', 'distance', 'path_length', 'object_num'], header=None)
 plt.plot(df['time'], df['ci'], color="blue", label="CI")
 
 

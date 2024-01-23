@@ -41,6 +41,10 @@ from utils.log_manager import LogManager
 from utils.log_writer import LogWriter
 from habitat.utils.visualizations import fog_of_war, maps
 
+from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
+from pytorch_grad_cam.utils.image import show_cam_on_image
+from pytorch_grad_cam import GradCAM
+
 
 def to_grid(coordinate_min, coordinate_max, global_map_size, position):
     grid_size = (coordinate_max - coordinate_min) / global_map_size
@@ -208,6 +212,8 @@ class PPOTrainerO(BaseRLTrainerOracle):
             previous_action_embedding_size=self.config.RL.PREVIOUS_ACTION_EMBEDDING_SIZE,
             use_previous_action=self.config.RL.PREVIOUS_ACTION
         )
+        
+        logger.info("DEVICE: " + str(self.device))
         self.actor_critic.to(self.device)
 
         self.agent = PPOOracle(
@@ -304,7 +310,8 @@ class PPOTrainerO(BaseRLTrainerOracle):
         return results
     
     
-    def _delete_observed_target(self, n, object_num):
+    def _delete_observed_target(self, n):
+        object_num = 0
         for i in self._target_index_list[n]:
             if self._observed_object_ci_one[n][i-maps.MAP_TARGET_POINT_INDICATOR] > self.TARGET_THRESHOLD_ONE:
                 self._target_index_list[n].remove(i)
@@ -327,14 +334,14 @@ class PPOTrainerO(BaseRLTrainerOracle):
                             #self._taken_index_list[n].append(top_down_map[n][i][j])
 
         # ciが閾値を超えているobjectがあれば削除
-        object_num = self._delete_observed_target(n, object_num)
+        object_num_deleted = self._delete_observed_target(n)
         
         # もし全部のobjectが削除されたら、リセット
         if len(self._target_index_list[n]) == 0:
             self._target_index_list[n] = [maps.MAP_TARGET_POINT_INDICATOR, maps.MAP_TARGET_POINT_INDICATOR+1, maps.MAP_TARGET_POINT_INDICATOR+2]
             self._observed_object_ci_one[n] = [0, 0, 0]
             
-        return ci, object_num
+        return ci, object_num_deleted
         
 
     def _collect_rollout_step(
@@ -391,6 +398,7 @@ class PPOTrainerO(BaseRLTrainerOracle):
             exp_area.append(rewards[i][0][2]-rewards[i][0][3])
             exp_area_pre.append(rewards[i][0][3])
             #matrics.append(rewards[i][1])
+            object_num.append(0)
             fog_of_war_map.append(infos[i]["picture_range_map"]["fog_of_war_mask"])
             top_down_map.append(infos[i]["picture_range_map"]["map"])
             top_map.append(infos[i]["top_down_map"]["map"])
@@ -525,10 +533,11 @@ class PPOTrainerO(BaseRLTrainerOracle):
         running_episode_stats["exp_area"] += (1 - masks) * current_episode_exp_area
         current_episode_distance += distance
         running_episode_stats["distance"] += (1 - masks) * current_episode_distance
-        running_episode_stats["count"] += 1 - masks
         current_episode_ci += ci
         running_episode_stats["ci"] += (1 - masks) * current_episode_ci
+        current_episode_object_num += object_num
         running_episode_stats["object_num"] += (1 - masks) * current_episode_object_num
+        running_episode_stats["count"] += 1 - masks
 
         for k, v in self._extract_scalars_from_infos(infos).items():
             v = torch.tensor(
@@ -914,21 +923,10 @@ class PPOTrainerO(BaseRLTrainerOracle):
     def _eval_checkpoint(
         self,
         checkpoint_path: str,
-        writer: TensorboardWriter,
         log_manager: LogManager,
         date: str,
         checkpoint_index: int = 0,
     ) -> None:
-        r"""Evaluates a single checkpoint.
-
-        Args:
-            checkpoint_path: path of checkpoint
-            writer: tensorboard writer object for logging to tensorboard
-            checkpoint_index: index of cur checkpoint for logging
-
-        Returns:
-            None
-        """
         
         self.log_manager = log_manager
         #ログ出力設定
@@ -936,13 +934,13 @@ class PPOTrainerO(BaseRLTrainerOracle):
         eval_reward_logger = self.log_manager.createLogWriter("reward")
         #time, ci, exp_area, distance. path_length
         eval_metrics_logger = self.log_manager.createLogWriter("metrics")
-        #eval_take_picture_writer = log_manager.createLogWriter("take_picture")
-        #eval_picture_position_writer = log_manager.createLogWriter("picture_position")
-        
+        eval_ci_logger = self.log_manager.createLogWriter("ci")
         #フォルダがない場合は、作成
+        """
         p_dir = pathlib.Path("./log/" + date + "/eval/Picture")
         if not p_dir.exists():
             p_dir.mkdir(parents=True)
+        """
         
         # Map location CPU is almost always better than mapping to a CUDA device.
         ckpt_dict = self.load_checkpoint(checkpoint_path, map_location="cpu")
@@ -1088,6 +1086,7 @@ class PPOTrainerO(BaseRLTrainerOracle):
                 fog_of_war_map.append(infos[i]["picture_range_map"]["fog_of_war_mask"])
                 top_down_map.append(infos[i]["picture_range_map"]["map"])
                 top_map.append(infos[i]["top_down_map"]["map"])
+                object_num.append(0)
                 
                 # multi goal distanceの計算
                 dis = 0.0
@@ -1105,13 +1104,10 @@ class PPOTrainerO(BaseRLTrainerOracle):
                     # 今回撮ったpicture(p_n)が保存してあるpicture(p_k)とかぶっているkを保存
                     cover_list = [] 
                     picture_range_map = self._create_picture_range_map(top_down_map[n], fog_of_war_map[n])
-                    
                     ci[n], object_num[n] = self._do_take_picture_object(top_map, fog_of_war_map, n)
                     
-                    #########################
                     if ci[n] == 0:
                         continue
-                    #########################
                     
                     # p_kのそれぞれのpicture_range_mapのリスト
                     pre_fog_of_war_map = [sublist[1] for sublist in self._taken_picture_list[n]]
@@ -1177,14 +1173,12 @@ class PPOTrainerO(BaseRLTrainerOracle):
             reward = torch.tensor(
                 reward, dtype=torch.float, device=self.device
             ).unsqueeze(1)
-            #exp_area = np.array(exp_area)
             exp_area = torch.tensor(
                 exp_area, dtype=torch.float, device=self.device
             ).unsqueeze(1)
             distance = torch.tensor(
                 distance, dtype=torch.float, device=self.device
             ).unsqueeze(1)
-            #ci = np.array(ci)
             ci= torch.tensor(
                 ci, dtype=torch.float, device=self.device
             ).unsqueeze(1)
@@ -1252,6 +1246,11 @@ class PPOTrainerO(BaseRLTrainerOracle):
                         current_episodes[i].scene_id + '.' + 
                         current_episodes[i].episode_id
                     ] = infos[i]["raw_metrics"]
+                    
+                    _ci = 0.0
+                    for j in range(len(self._taken_picture_list[i])):
+                        _ci += self._taken_picture_list[i][j][0]
+                    eval_ci_logger.writeLine(str(_ci))
 
                     if len(self.config.VIDEO_OPTION) > 0:
                         if len(rgb_frames[i]) == 0:
@@ -1278,7 +1277,6 @@ class PPOTrainerO(BaseRLTrainerOracle):
                             episode_id=current_episodes[i].episode_id,
                             checkpoint_idx=checkpoint_index,
                             metrics=metrics,
-                            tb_writer=writer,
                             name_ci=name_ci,
                         )
         
@@ -1292,12 +1290,14 @@ class PPOTrainerO(BaseRLTrainerOracle):
                         name_p = 0.0  
                             
                         for j in range(len(self._taken_picture_list[i])):
+                            """
                             eval_picture_top_logger = self.log_manager.createLogWriter("Picture/picture_top_" + str(current_episodes[i].episode_id) + "_" + str(j) + "_" + str(checkpoint_index))
                 
                             for k in range(len(self._taken_picture_list[i][j][1])):
                                 for l in range(len(self._taken_picture_list[i][j][1][0])):
                                     eval_picture_top_logger.write(str(self._taken_picture_list[i][j][1][k][l]))
                                 eval_picture_top_logger.writeLine()
+                            """
                                 
                             name_p = self._taken_picture_list[i][j][0]
                             picture_name = "episode=" + str(current_episodes[i].episode_id)+ "-ckpt=" + str(checkpoint_index) + "-" + str(j) + "-" + str(name_p)
@@ -1314,7 +1314,6 @@ class PPOTrainerO(BaseRLTrainerOracle):
                             path = dir_name + "/" + picture_name + ".png"
                         
                             plt.savefig(path)
-                            logger.info("Picture created: " + path)
                         
                         #Save score_matrics
                         """
@@ -1392,3 +1391,559 @@ class PPOTrainerO(BaseRLTrainerOracle):
         eval_metrics_logger.writeLine(str(step_id) + "," + str(metrics["ci"]) + "," + str(metrics["exp_area"]) + "," + str(metrics["distance"]) + "," + str(metrics["raw_metrics.agent_path_length"]) + "," + str(metrics["object_num"]))
 
         self.envs.close()
+        
+        
+    def _grad_cam_checkpoint(
+        self,
+        checkpoint_path: str,
+        log_manager: LogManager,
+        date: str,
+        checkpoint_index: int = 0,
+    ) -> None:
+        
+        self.log_manager = log_manager
+        #ログ出力設定
+        #time, reward
+        grad_reward_logger = self.log_manager.createLogWriter("reward")
+        #time, ci, exp_area, distance. path_length
+        grad_metrics_logger = self.log_manager.createLogWriter("metrics")
+        
+        # Map location CPU is almost always better than mapping to a CUDA device.
+        ckpt_dict = self.load_checkpoint(checkpoint_path, map_location="cpu")
+        print("PATH")
+        print(checkpoint_path)
+
+        if self.config.EVAL.USE_CKPT_CONFIG:
+            config = self._setup_eval_config(ckpt_dict["config"])
+        else:
+            config = self.config.clone()
+
+        ppo_cfg = config.RL.PPO
+
+        config.defrost()
+        config.TASK_CONFIG.DATASET.SPLIT = config.EVAL.SPLIT
+        config.freeze()
+
+        if len(self.config.VIDEO_OPTION) > 0:
+            config.defrost()
+            config.TASK_CONFIG.TASK.MEASUREMENTS.append("TOP_DOWN_MAP")
+            config.TASK_CONFIG.TASK.MEASUREMENTS.append("COLLISIONS")
+            config.freeze()
+
+        logger.info(f"env config: {config}")
+        
+        self.device = (
+            torch.device("cuda", self.config.TORCH_GPU_ID)
+            if torch.cuda.is_available()
+            else torch.device("cpu")
+        )
+        
+        self.envs = construct_envs(config, get_env_class(config.ENV_NAME))
+        self._setup_actor_critic_agent(ppo_cfg)
+
+        self.agent.load_state_dict(ckpt_dict["state_dict"])
+        self.actor_critic = self.agent.actor_critic
+        
+        self._taken_picture = []
+        self._taken_picture_list = []
+        self._target_index_list = []
+        self._taken_index_list = []
+        # 1回のCIを保存
+        self._observed_object_ci_one = []
+        
+        for i in range(self.envs.num_envs):
+            self._taken_picture.append([])
+            self._taken_picture_list.append([])
+            self._target_index_list.append([maps.MAP_TARGET_POINT_INDICATOR, maps.MAP_TARGET_POINT_INDICATOR+1, maps.MAP_TARGET_POINT_INDICATOR+2])
+            self._taken_index_list.append([])
+            self._observed_object_ci_one.append([0, 0, 0])
+        
+        observations = self.envs.reset()
+        batch = batch_obs(observations, device=self.device)
+
+        current_episode_reward = torch.zeros(
+            self.envs.num_envs, 1, device=self.device
+        )
+        current_episode_exp_area = torch.zeros(
+            self.envs.num_envs, 1, device=self.device
+        )
+        current_episode_distance = torch.zeros(
+            self.envs.num_envs, 1, device=self.device
+        )
+        current_episode_ci = torch.zeros(
+            self.envs.num_envs, 1, device=self.device
+        )
+        current_episode_object_num = torch.zeros(
+            self.envs.num_envs, 1, device=self.device
+        )
+        
+        test_recurrent_hidden_states = torch.zeros(
+            self.actor_critic.net.num_recurrent_layers,
+            self.config.NUM_PROCESSES,
+            ppo_cfg.hidden_size,
+            device=self.device,
+        )
+        prev_actions = torch.zeros(
+            self.config.NUM_PROCESSES, 1, device=self.device, dtype=torch.long
+        )
+        not_done_masks = torch.zeros(
+            self.config.NUM_PROCESSES, 1, device=self.device
+        )
+        stats_episodes = dict()  # dict of dicts that stores stats per episode
+        raw_metrics_episodes = dict()
+
+        rgb_frames = [
+            [] for _ in range(self.config.NUM_PROCESSES)
+        ]  # type: List[List[np.ndarray]]
+        if len(self.config.VIDEO_OPTION) > 0:
+            os.makedirs(self.config.VIDEO_DIR+"/"+date, exist_ok=True)
+
+        pbar = tqdm.tqdm(total=self.config.TEST_EPISODE_COUNT)
+        self.actor_critic.eval()
+        
+        #################################
+        #Grad Camで使う層を決める(まずはRGBだけ)
+        target_layers_rgb = [self.actor_critic.net.visual_encoder.cnn[-4]]
+        cam = GradCAM(
+            model=self.actor_critic.net.visual_encoder, target_layers=target_layers_rgb
+        )
+        #################################
+        step_num = 0
+        
+        while (
+            len(stats_episodes) < self.config.TEST_EPISODE_COUNT
+            and self.envs.num_envs > 0
+        ):
+            current_episodes = self.envs.current_episodes()
+
+            with torch.no_grad():
+                (
+                    _,
+                    actions,
+                    _,
+                    test_recurrent_hidden_states,
+                ) = self.actor_critic.act(
+                    batch,
+                    test_recurrent_hidden_states,
+                    prev_actions,
+                    not_done_masks,
+                    deterministic=False,
+                )
+
+                prev_actions.copy_(actions)
+                
+            #################################
+            #policy_gradcam(self.actor_critic.net.visual_encoder, observations[0])
+            
+            # Grad Camについて
+            cnn_input = []
+            logger.info("SHAPE1: " + str(len(observations)))
+            logger.info("SHAPE3: " + str(observations[0]["rgb"].shape))
+            if self.actor_critic.net.visual_encoder._n_input_rgb > 0:
+                rgb_observations = torch.from_numpy(observations[0]["rgb"]).clone()
+                # permute tensor to dimension [BATCH x CHANNEL x HEIGHT X WIDTH]
+                rgb_observations = rgb_observations.permute(2, 0, 1)
+                rgb_observations = rgb_observations / 255.0  # normalize RGB
+                cnn_input.append(rgb_observations)
+
+            if self.actor_critic.net.visual_encoder._n_input_depth > 0:
+                depth_observations = torch.from_numpy(observations[0]["depth"]).clone()
+                # permute tensor to dimension [BATCH x CHANNEL x HEIGHT X WIDTH]
+                depth_observations = depth_observations.permute(2, 0, 1)
+                cnn_input.append(depth_observations)
+
+            cnn_input = torch.cat(cnn_input, dim=0)
+            grayscale_cam = cam(
+                input_tensor=cnn_input,
+                targets=[ClassifierOutputTarget(actions[0])],
+            )
+            # 最初の出力だけ取得
+            grayscale_cam = grayscale_cam[0, :]
+            visualization = show_cam_on_image(observations[0]["RGB"].permute(0, 3, 1, 2).numpy(), grayscale_cam, use_rgb=True)
+            fig, ax = plt.subplots(1,2)
+            ax[0].imshow(img.permute(1, 2, 0).numpy())
+            ax[1].imshow(visualization)
+            
+            dir_name = "./taken_grad/" + date
+            if not os.path.exists(dir_name):
+                os.makedirs(dir_name)
+            picture_name = "episode=" + str(current_episodes[i].episode_id)+ "-" + str(step_num) + "-" + str(actions[0])
+            path = dir_name + "/" + picture_name + ".png"
+            plt.savefig(path)
+            #################################
+
+            outputs = self.envs.step([a[0].item() for a in actions])
+ 
+            observations, rewards, dones, infos = [
+                list(x) for x in zip(*outputs)
+            ]
+            batch = batch_obs(observations, device=self.device)
+            
+            not_done_masks = torch.tensor(
+                [[0.0] if done else [1.0] for done in dones],
+                dtype=torch.float,
+                device=self.device,
+            )
+            
+            for n in range(self.envs.num_envs):
+                self._observed_object_ci_one[n] = [0, 0, 0] 
+            
+            reward = []
+            ci = []
+            exp_area = [] # 探索済みのエリア()
+            exp_area_pre = []
+            distance = []
+            fog_of_war_map = []
+            top_down_map = [] 
+            top_map = []
+            object_num = []
+            n_envs = self.envs.num_envs
+            
+            for i in range(n_envs):
+                reward.append(rewards[i][0][0])
+                ci.append(rewards[i][0][1])
+                exp_area.append(rewards[i][0][2]-rewards[i][0][3])
+                exp_area_pre.append(rewards[i][0][3])
+                fog_of_war_map.append(infos[i]["picture_range_map"]["fog_of_war_mask"])
+                top_down_map.append(infos[i]["picture_range_map"]["map"])
+                top_map.append(infos[i]["top_down_map"]["map"])
+                object_num.append(0)
+                
+                # multi goal distanceの計算
+                dis = 0.0
+                dis_pre = 0
+                for j in self._target_index_list[i]:
+                    dis_pre += rewards[i][0][5][j-maps.MAP_TARGET_POINT_INDICATOR]
+                    dis += rewards[i][0][4][j-maps.MAP_TARGET_POINT_INDICATOR]
+            
+                reward[i] += dis_pre - dis
+                distance.append(dis_pre - dis)
+            
+            for n in range(len(observations)):
+            #TAKE_PICTUREが呼び出されたかを検証
+                if ci[n] != -sys.float_info.max:
+                    # 今回撮ったpicture(p_n)が保存してあるpicture(p_k)とかぶっているkを保存
+                    cover_list = [] 
+                    picture_range_map = self._create_picture_range_map(top_down_map[n], fog_of_war_map[n])
+                    ci[n], object_num[n] = self._do_take_picture_object(top_map, fog_of_war_map, n)
+                    
+                    if ci[n] == 0:
+                        continue
+                    
+                    # p_kのそれぞれのpicture_range_mapのリスト
+                    pre_fog_of_war_map = [sublist[1] for sublist in self._taken_picture_list[n]]
+                        
+                    # それぞれと閾値より被っているか計算
+                    idx = -1
+                    min_ci = ci[n]
+                    for k in range(len(pre_fog_of_war_map)):
+                        # 閾値よりも被っていたらcover_listにkを追加
+                        if self._check_percentage_of_fog(picture_range_map, pre_fog_of_war_map[k]) == True:
+                            cover_list.append(k)
+                                
+                        #ciの最小値の写真を探索(１つも被っていない時用)
+                        if min_ci < self._taken_picture_list[n][idx][0]:
+                            idx = k
+                            min_ci = self._taken_picture_list[n][idx][0]
+                            
+                    # 今までの写真と多くは被っていない時
+                    if len(cover_list) == 0:
+                        #範囲が多く被っていなくて、self._num_picture回未満写真を撮っていたらそのまま保存
+                        if len(self._taken_picture_list[n]) != self._num_picture:
+                            self._taken_picture_list[n].append([ci[n], picture_range_map])
+                            if len(self.config.VIDEO_OPTION) > 0:
+                                self._taken_picture[n].append(observations[n]["rgb"])
+                            reward[n] += ci[n]
+                                
+                        #範囲が多く被っていなくて、self._num_picture回以上写真を撮っていたら
+                        else:
+                            # 今回の写真が保存してある写真の１つでもCIが高かったらCIが最小の保存写真と入れ替え
+                            if idx != -1:
+                                ci_pre = self._taken_picture_list[n][idx][0]
+                                self._taken_picture_list[n][idx] = [ci[n], picture_range_map]
+                                if len(self.config.VIDEO_OPTION) > 0:
+                                    self._taken_picture[n][idx] = observations[n]["rgb"]   
+                                reward[n] += (ci[n] - ci_pre) 
+                                ci[n] -= ci_pre
+                            else:
+                                ci[n] = 0.0    
+                            
+                    # 1つとでも多く被っていた時    
+                    else:
+                        min_idx = -1
+                        min_ci_k = 1000
+                        # 多く被った写真のうち、ciが最小のものを計算
+                        for k in range(len(cover_list)):
+                            idx_k = cover_list[k]
+                            if self._taken_picture_list[n][idx_k][0] < min_ci_k:
+                                min_ci_k = self._taken_picture_list[n][idx_k][0]
+                                min_idx = idx_k
+                                    
+                        # 被った割合分小さくなったCIでも保存写真の中の最小のCIより大きかったら交換
+                        if self._compareWithChangedCI(picture_range_map, pre_fog_of_war_map, cover_list, ci[n], min_ci_k, min_idx) == True:
+                            self._taken_picture_list[n][min_idx] = [ci[n], picture_range_map]
+                            if len(self.config.VIDEO_OPTION) > 0:
+                                self._taken_picture[n][min_idx] = observations[n]["rgb"]   
+                            reward[n] += (ci[n] - min_ci_k)  
+                            ci[n] -= min_ci_k
+                        else:
+                            ci[n] = 0.0
+                else:
+                    ci[n] = 0.0
+                
+            reward = torch.tensor(reward, dtype=torch.float, device=self.device).unsqueeze(1)
+            exp_area = torch.tensor(exp_area, dtype=torch.float, device=self.device).unsqueeze(1)
+            distance = torch.tensor(distance, dtype=torch.float, device=self.device).unsqueeze(1)
+            ci= torch.tensor(ci, dtype=torch.float, device=self.device).unsqueeze(1)
+            object_num = torch.tensor(object_num, dtype=torch.float, device=self.device).unsqueeze(1)
+
+            current_episode_reward += reward
+            current_episode_exp_area += exp_area
+            current_episode_distance += distance
+            current_episode_ci += ci
+            current_episode_object_num += object_num
+            next_episodes = self.envs.current_episodes()
+            envs_to_pause = []
+
+            for i in range(n_envs):
+                if (
+                    next_episodes[i].scene_id,
+                    next_episodes[i].episode_id,
+                ) in stats_episodes:
+                    envs_to_pause.append(i)
+
+                # episode ended
+                if not_done_masks[i].item() == 0:
+                    pbar.update()
+                    episode_stats = dict()
+                    episode_stats["reward"] = current_episode_reward[i].item()
+                    episode_stats["exp_area"] = current_episode_exp_area[i].item()
+                    episode_stats["distance"] = current_episode_distance[i].item()
+                    episode_stats["ci"] = current_episode_ci[i].item()
+                    episode_stats["object_num"] = current_episode_object_num[i].item()
+                    
+                    episode_stats.update(
+                        self._extract_scalars_from_info(infos[i])
+                    )
+                    current_episode_reward[i] = 0
+                    current_episode_exp_area[i] = 0
+                    current_episode_distance[i] = 0
+                    current_episode_ci[i] = 0
+                    current_episode_object_num[i] = 0
+                    # use scene_id + episode_id as unique id for storing stats
+                    stats_episodes[
+                        (
+                            current_episodes[i].scene_id,
+                            current_episodes[i].episode_id,
+                        )
+                    ] = episode_stats
+                    
+                    raw_metrics_episodes[
+                        current_episodes[i].scene_id + '.' + 
+                        current_episodes[i].episode_id
+                    ] = infos[i]["raw_metrics"]
+
+                    if len(self.config.VIDEO_OPTION) > 0:
+                        if len(rgb_frames[i]) == 0:
+                            frame = observations_to_image(observations[i], infos[i], actions[i].cpu().numpy())
+                            rgb_frames[i].append(frame)
+                        picture = rgb_frames[i][-1]
+                        for j in range(50):
+                           rgb_frames[i].append(picture) 
+                        metrics=self._extract_scalars_from_info(infos[i])
+                        name_ci = 0.0
+                        
+                        for j in range(len(self._taken_picture_list[i])):
+                            name_ci += self._taken_picture_list[i][j][0]
+                        
+                        name_ci = str(name_ci) + "-" + str(len(stats_episodes))
+                        generate_video(
+                            video_option=self.config.VIDEO_OPTION,
+                            video_dir=self.config.VIDEO_DIR+"/"+date,
+                            images=rgb_frames[i],
+                            episode_id=current_episodes[i].episode_id,
+                            checkpoint_idx=checkpoint_index,
+                            metrics=metrics,
+                            tb_writer=writer,
+                            name_ci=name_ci,
+                        )
+        
+                        # Save taken picture
+                        metric_strs = []
+                        in_metric = ['exp_area', 'ci', 'distance']
+                        for k, v in metrics.items():
+                            if k in in_metric:
+                                metric_strs.append(f"{k}={v:.2f}")
+                        
+                        name_p = 0.0  
+                            
+                        for j in range(len(self._taken_picture_list[i])):                
+                            name_p = self._taken_picture_list[i][j][0]
+                            picture_name = "episode=" + str(current_episodes[i].episode_id)+ "-ckpt=" + str(checkpoint_index) + "-" + str(j) + "-" + str(name_p)
+                            dir_name = "./taken_picture/" + date 
+                            if not os.path.exists(dir_name):
+                                os.makedirs(dir_name)
+                        
+                            picture = self._taken_picture[i][j]
+                            plt.figure()
+                            ax = plt.subplot(1, 1, 1)
+                            ax.axis("off")
+                            plt.imshow(picture)
+                            plt.subplots_adjust(left=0.1, right=0.95, bottom=0.05, top=0.95)
+                            path = dir_name + "/" + picture_name + ".png"
+                        
+                            plt.savefig(path)
+                            
+                        rgb_frames[i] = []
+                        
+                    self._taken_picture[i] = []
+                    self._taken_picture_list[i] = []
+                    self._target_index_list[i] = [maps.MAP_TARGET_POINT_INDICATOR, maps.MAP_TARGET_POINT_INDICATOR+1, maps.MAP_TARGET_POINT_INDICATOR+2]
+                    self._taken_index_list[i] = []
+
+                # episode continues
+                elif len(self.config.VIDEO_OPTION) > 0:
+                    frame = observations_to_image(observations[i], infos[i], actions[i].cpu().numpy())
+                    rgb_frames[i].append(frame)
+                    step_num += 1
+
+            (
+                self.envs,
+                test_recurrent_hidden_states,
+                not_done_masks,
+                current_episode_reward,
+                current_episode_exp_area,
+                current_episode_distance,
+                current_episode_ci,
+                current_episode_object_num,
+                prev_actions,
+                batch,
+                rgb_frames,
+            ) = self._pause_envs(
+                envs_to_pause,
+                self.envs,
+                test_recurrent_hidden_states,
+                not_done_masks,
+                current_episode_reward,
+                current_episode_exp_area,
+                current_episode_distance,
+                current_episode_ci,
+                current_episode_object_num,
+                prev_actions,
+                batch,
+                rgb_frames,
+            )
+
+        num_episodes = len(stats_episodes)
+        
+        aggregated_stats = dict()
+        for stat_key in next(iter(stats_episodes.values())).keys():
+            aggregated_stats[stat_key] = (
+                sum([v[stat_key] for v in stats_episodes.values()])
+                / num_episodes
+            )
+
+        for k, v in aggregated_stats.items():
+            logger.info(f"Average episode {k}: {v:.4f}")
+        
+
+
+        step_id = checkpoint_index
+        if "extra_state" in ckpt_dict and "step" in ckpt_dict["extra_state"]:
+            step_id = ckpt_dict["extra_state"]["step"]
+        
+        grad_reward_logger.writeLine(str(step_id) + "," + str(aggregated_stats["reward"]))
+
+        metrics = {k: v for k, v in aggregated_stats.items() if k != "reward"}
+
+        logger.info("CI:" + str(metrics["ci"]))
+        grad_metrics_logger.writeLine(str(step_id) + "," + str(metrics["ci"]) + "," + str(metrics["exp_area"]) + "," + str(metrics["distance"]) + "," + str(metrics["raw_metrics.agent_path_length"]) + "," + str(metrics["object_num"]))
+
+        self.envs.close()
+    
+
+def policy_gradcam(net, observations):
+    net.eval()
+    net.zero_grad()
+
+    def __extract(grad):
+        global feature_grad
+        feature_grad = grad
+
+    cnn_input = []
+    if net._n_input_rgb > 0:
+        rgb_observations = observations["rgb"]
+        # permute tensor to dimension [BATCH x CHANNEL x HEIGHT X WIDTH]
+        rgb_observations = rgb_observations.permute(0, 3, 1, 2)
+        rgb_observations = rgb_observations / 255.0  # normalize RGB
+        cnn_input.append(rgb_observations)
+
+    if net._n_input_depth > 0:
+        depth_observations = observations["depth"]
+        # permute tensor to dimension [BATCH x CHANNEL x HEIGHT X WIDTH]
+        depth_observations = depth_observations.permute(0, 3, 1, 2)
+        cnn_input.append(depth_observations)
+
+    cnn_input = torch.cat(cnn_input, dim=1)
+    
+
+    # get features from the last convolutional layer
+    target_layers_rgb = self.actor_critic.net.visual_encoder.cnn[:-4]
+    features = target_layers_rgb(cnn_input)
+    
+    
+    
+    x = net.conv1(input)
+    x = F.relu(net.norm1(x))
+    x = net.blocks(x)
+    features = x
+
+    # hook for the gradients
+    def __extract_grad(grad):
+        global feature_grad
+        feature_grad = grad
+    features.register_hook(__extract_grad)
+
+    # get the output from the whole VGG architecture
+    x = net.policy_conv(x)
+    output = net.policy_bias(torch.flatten(x, 1))
+    pred = torch.argmax(output).item()
+    p_trans_display(pred)
+    pred = 50
+
+    # get the gradient of the output
+    output[:, pred].backward()
+
+    # pool the gradients across the channels
+    pooled_grad = torch.mean(feature_grad, dim=[0, 2, 3])
+    print(pooled_grad)
+
+    # weight the channels with the corresponding gradients
+    # (L_Grad-CAM = alpha * A)
+    features = features.detach()
+    print(features.size())
+    for i in range(features.shape[1]):
+        features[:, i, :, :] *= pooled_grad[i] 
+
+    # average the channels and create an heatmap
+    # ReLU(L_Grad-CAM)
+    heatmap = torch.mean(features, dim=1).squeeze()
+    heatmap = np.maximum(heatmap, 0)
+
+    # normalization for plotting
+    heatmap = heatmap / torch.max(heatmap)
+    heatmap = heatmap.numpy()
+    heatmap = np.rot90(heatmap,-1)
+    sns.heatmap(heatmap, cmap='viridis')
+    """
+    # project heatmap onto the input image
+    img = cv2.imread("C:/Users/yokuk/Desktop/W4S/0.Lab/Test_Program/pydlshogi2/network/ban.png")
+    heatmap = cv2.resize(heatmap, (img.shape[1], img.shape[0]))
+    heatmap = np.uint8(255 * heatmap)
+    heatmap = cv2.applyColorMap(heatmap, cv2.COLORMAP_JET)
+    superimposed_img = heatmap * 0.4 + img
+    superimposed_img = np.uint8(255 * superimposed_img / np.max(superimposed_img))
+    superimposed_img = cv2.cvtColor(superimposed_img, cv2.COLOR_BGR2RGB)
+    plt.imshow(superimposed_img)
+    """
+    plt.show()

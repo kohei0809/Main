@@ -5,6 +5,7 @@ import pathlib
 date = "23-10-26 18-29-56"
 date = "23-12-22 23-13-05"
 date = "24-01-08 12-14-22"
+date = "24-01-13 12-21-17"
 mode = "train"
 
 df = pd.read_csv("log/" + date + "/" + mode + "/action_prob.csv", names=['time', 'take_picture', 'forward', 'left', 'right', 'look_up', 'look_down'], header=None)

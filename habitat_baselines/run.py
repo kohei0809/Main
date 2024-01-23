@@ -122,23 +122,38 @@ def test():
     agent_type = "oracle-ego"
     run_type = "train"
     run_type = "eval"
+    #run_type = "grad_cam"
     start_date = datetime.datetime.now().strftime('%y-%m-%d %H-%M-%S') 
     
     config = get_config(exp_config)
     
-    if run_type == "eval":
+    if run_type == "train":
+        datadate = "" 
+        config.defrost()
+        config.NUM_PROCESSES = 20
+        config.RL.PPO.num_mini_batch = 4
+        config.freeze()
+    elif run_type == "eval":
         #datadate = "23-10-26 18-29-56"
-        #datadate = "23-12-22 23-13-05"
+        datadate = "23-12-22 23-13-05"
         datadate = "24-01-08 12-14-22"
+        #datadate = "24-01-13 12-21-17"
         config.defrost()
         config.NUM_PROCESSES = 60
+        config.TEST_EPISODE_COUNT = 1000
+        #config.TEST_EPISODE_COUNT = 10
+        config.VIDEO_OPTION = []
+        #config.VIDEO_OPTION = ["disk"]
         config.freeze()
-    else:
-       datadate = "" 
-       config.defrost()
-       config.NUM_PROCESSES = 40
-       config.freeze()
-    
+    elif run_type == "grad_cam":
+        datadate = "24-01-13 12-21-17"
+        config.defrost()
+        config.NUM_PROCESSES = 1
+        config.RL.PPO.num_mini_batch = 1
+        config.TEST_EPISODE_COUNT = 1
+        config.VIDEO_OPTION = ["disk"]
+        config.freeze()
+        
     
     random.seed(config.TASK_CONFIG.SEED)
     np.random.seed(config.TASK_CONFIG.SEED)
@@ -149,10 +164,6 @@ def test():
     config.TASK_CONFIG.TRAINER_NAME = agent_type
     config.CHECKPOINT_FOLDER = "cpt/" + start_date
     config.EVAL_CKPT_PATH_DIR = "cpt/" + datadate 
-    config.TEST_EPISODE_COUNT = 1000
-    #config.TEST_EPISODE_COUNT = 10
-    config.VIDEO_OPTION = []
-    #config.VIDEO_OPTION = ["disk"]
     config.freeze()
     
     if agent_type in ["oracle", "oracle-ego", "no-map"]:
@@ -199,6 +210,9 @@ def test():
         trainer.train(log_manager, start_date)
     elif run_type == "eval":
         trainer.eval(log_manager, start_date)
+    
+    elif run_type == "grad_cam":
+        trainer.grad_cam(log_manager, start_date)
        
     end_date = datetime.datetime.now().strftime('%y-%m-%d %H-%M-%S') 
     print("Start at " + start_date)

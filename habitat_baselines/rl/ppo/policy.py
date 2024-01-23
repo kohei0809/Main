@@ -12,7 +12,7 @@ import torch.nn.functional as F
 from habitat_baselines.common.utils import CategoricalNet, Flatten, to_grid
 from habitat_baselines.rl.models.projection import Projection, RotateTensor, get_grid
 from habitat_baselines.rl.models.rnn_state_encoder import RNNStateEncoder
-from habitat_baselines.rl.models.simple_cnn import RGBCNNOracle, MapCNN
+from habitat_baselines.rl.models.simple_cnn import RGBCNNOracle, MapCNN, MapCNN_Pre
 from habitat_baselines.rl.models.projection import Projection
 from habitat.core.logging import logger
 from utils.log_manager import LogManager
@@ -134,6 +134,7 @@ class ProposedPolicyOracle(PolicyOracle):
     ):
         super().__init__(
             ProposedNetOracle(
+            #ProposedNetOracle_Pre(
                 agent_type,
                 observation_space=observation_space,
                 hidden_size=hidden_size,
@@ -278,6 +279,7 @@ class ProposedNetOracle(Net):
         
         if agent_type == "oracle-ego":
             self.map_encoder = MapCNN(50, 256, agent_type)
+            #self.map_encoder = MapCNN(100, 256, agent_type)
             self.occupancy_embedding = nn.Embedding(4, 16)
             self.object_embedding = nn.Embedding(10, 16)
             self.goal_embedding = nn.Embedding(9, object_category_embedding_size)
@@ -319,32 +321,20 @@ class ProposedNetOracle(Net):
             x = [perception_embed] + x
 
         global_map_embedding = []
+        
         global_map = observations['semMap']
         global_map_embedding.append(self.occupancy_embedding(global_map[:, :, :, 0].type(torch.LongTensor).to(self.device).view(-1)).view(bs, 50, 50 , -1))
-        
-        """
-        logger.info("GLOBAL_MAP")
-        logger.info(global_map.shape)
-        logger.info(global_map[:, :, :, 1].shape)
-        logger.info(type(global_map[0, 40, 40, 1]))
-        #logger.info(global_map[0, 40, 40, 1].item())
-        
-        for i in range(global_map[:, :, :, 1].shape[0]):
-            for j in range(global_map[:, :, :, 1].shape[1]):
-                for k in range(global_map[:, :, :, 1].shape[2]):
-                    global_map[i, j, k, 1] = int(global_map[i, j, k, 1].item())
-        
-        logger.info("GLOBAL_MAP")
-        logger.info(global_map.shape)
-        logger.info(type(global_map))
-        
-        logger.info("OBJ_MAP")
-        obj_map = observations['semMap'][:, 1, :, :]
-        logger.info(obj_map.shape)
-        logger.info(type(obj_map))
-        """
-        
         global_map_embedding.append(self.object_embedding(global_map[:, :, :, 1].type(torch.LongTensor).to(self.device).view(-1)).view(bs, 50, 50, -1))
+        """
+        global_map_mini = observations['semMap_mini']
+        global_map_big = observations['semMap_big']
+        global_map_embedding.append(self.occupancy_embedding(global_map_mini[:, :, :, 0].type(torch.LongTensor).to(self.device).view(-1)).view(bs, 100, 100 , -1))
+        global_map_embedding.append(self.occupancy_embedding(global_map_big[:, :, :, 0].type(torch.LongTensor).to(self.device).view(-1)).view(bs, 100, 100 , -1))
+        """
+        
+        global_map_embedding.append(self.object_embedding(global_map_mini[:, :, :, 1].type(torch.LongTensor).to(self.device).view(-1)).view(bs, 100, 100, -1))
+        global_map_embedding.append(self.object_embedding(global_map_big[:, :, :, 1].type(torch.LongTensor).to(self.device).view(-1)).view(bs, 100, 100, -1))
+        
         global_map_embedding = torch.cat(global_map_embedding, dim=3)
         map_embed = self.map_encoder(global_map_embedding)
         x = [map_embed] + x
@@ -356,3 +346,70 @@ class ProposedNetOracle(Net):
         x, rnn_hidden_states = self.state_encoder(x, rnn_hidden_states, masks)
         return x, rnn_hidden_states  
 
+class ProposedNetOracle_Pre(Net):
+    r"""Network which passes the input image through CNN and concatenates
+    goal vector with CNN's output and passes that through RNN.
+    """
+
+    def __init__(self, agent_type, observation_space, hidden_size, goal_sensor_uuid, device, 
+        object_category_embedding_size, previous_action_embedding_size, use_previous_action
+    ):
+        super().__init__()
+        self.agent_type = agent_type
+        self._hidden_size = hidden_size
+        self.device = device
+        self.use_previous_action = use_previous_action
+
+        self.visual_encoder = RGBCNNOracle(observation_space, 512)
+        
+        if agent_type == "oracle-ego":
+            self.map_encoder = MapCNN_Pre(50, 256, agent_type)
+            self.occupancy_embedding = nn.Embedding(4, 16)
+        elif agent_type == "no-map":
+            pass
+        
+        self.action_embedding = nn.Embedding(4, previous_action_embedding_size)
+
+        if self.use_previous_action:
+            self.state_encoder = RNNStateEncoder(
+                (self._hidden_size) + previous_action_embedding_size, self._hidden_size,
+            )
+        else:
+            self.state_encoder = RNNStateEncoder(
+                (self._hidden_size), self._hidden_size,   #Replace 2 by number of target categories later
+            )
+        self.train()
+
+    @property
+    def output_size(self):
+        return self._hidden_size
+
+    @property
+    def is_blind(self):
+        return self.visual_encoder.is_blind
+
+    @property
+    def num_recurrent_layers(self):
+        return self.state_encoder.num_recurrent_layers
+
+    def forward(self, observations, rnn_hidden_states, prev_actions, masks):
+        x = []
+        bs = observations['rgb'].shape[0]
+        
+        if not self.is_blind:
+            perception_embed = self.visual_encoder(observations)
+            x = [perception_embed] + x
+
+        global_map_embedding = []
+        global_map = observations['semMap']
+        global_map_embedding.append(self.occupancy_embedding(global_map[:, :, :, 0].type(torch.LongTensor).to(self.device).view(-1)).view(bs, 50, 50 , -1))
+        global_map_embedding = torch.cat(global_map_embedding, dim=3)
+        map_embed = self.map_encoder(global_map_embedding)
+        x = [map_embed] + x
+            
+        if self.use_previous_action:
+            x = torch.cat(x + [self.action_embedding(prev_actions).squeeze(1)], dim=1)
+        else:
+            x = torch.cat(x, dim=1)
+        x, rnn_hidden_states = self.state_encoder(x, rnn_hidden_states, masks)
+        return x, rnn_hidden_states 
