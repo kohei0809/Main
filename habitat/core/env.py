@@ -25,6 +25,7 @@ from habitat_baselines.common.utils import quat_from_angle_axis
 from habitat.core.logging import logger
 from utils.log_manager import LogManager
 from utils.log_writer import LogWriter
+import habitat.articulated_agents.humanoids.kinematic_humanoid as kinematic_humanoid
 
 import matplotlib.pyplot as plt
 
@@ -267,6 +268,24 @@ class Env:
             dataset_index = object_to_datset_mapping[current_goal]
             ind = self._sim._sim.add_object(dataset_index)
             self._sim._sim.set_translation(np.array(self.current_episode.goals[i].position), ind)
+            
+        ############################################################
+        humanoid_name1 = "male_1"
+        humanoid_path1 = f"data/humanoids/humanoid_data/{humanoid_name1}/{humanoid_name1}.urdf"
+        agent_config1 = DictConfig(
+                {
+                    "articulated_agent_urdf": humanoid_path1,
+                    "motion_data_path": walk_pose_path1,
+                }
+            )
+        
+        kin_humanoid1 = kinematic_humanoid.KinematicHumanoid(agent_config1, self.sim, pose="stop_pose")
+        kin_humanoid1.reconfigure()
+        kin_humanoid1.base_pos = mn.Vector3(2, 0, 7.3)
+        kin_humanoid1.base_rot = -1.57
+        logger.info("Insert Humanoid")
+        
+        ###########################################################
 
         observations = self.task.reset(episode=self.current_episode)
 

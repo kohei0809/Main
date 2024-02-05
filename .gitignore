@@ -193,7 +193,6 @@ tb/
 train.log
 cpt/
 exp/
-*.csv
 taken_picture/
 *.txt
 o.*
