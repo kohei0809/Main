@@ -21,6 +21,7 @@ from habitat.tasks.nav.multi_nav_task import (
     MultiGoalNavEpisode,
     ObjectViewLocation,
 )
+from habitat.core.logging import logger
 
 CONTENT_SCENES_PATH_FIELD = "content_scenes_path"
 DEFAULT_SCENE_PATH_PREFIX = "data/scene_datasets/"
@@ -145,6 +146,7 @@ class MaximumInfoDatasetV1(Dataset):
                 "category_to_mp3d_category_id"
             ]
 
+        """
         assert len(self.category_to_task_category_id) == len(
             self.category_to_scene_annotation_category_id
         )
@@ -152,6 +154,7 @@ class MaximumInfoDatasetV1(Dataset):
         assert set(self.category_to_task_category_id.keys()) == set(
             self.category_to_scene_annotation_category_id.keys()
         ), "category_to_task and category_to_mp3d must have the same keys"
+        """
 
         if len(deserialized["episodes"]) == 0:
             return
@@ -164,8 +167,8 @@ class MaximumInfoDatasetV1(Dataset):
             
 
         for i, episode in enumerate(deserialized["episodes"]):
-            episode['object_index'] = 0 ##Shivansh why does this exist
-            episode["currGoalIndex"] = 0
+            #episode['object_index'] = 0 ##Shivansh why does this exist
+            #episode["currGoalIndex"] = 0
             episode = MaximumInformationEpisode(**episode)
             episode.episode_id = str(i)
 
@@ -178,8 +181,9 @@ class MaximumInfoDatasetV1(Dataset):
                 episode.scene_id = os.path.join(scenes_dir, episode.scene_id)
                 
             # episode.goals = self.goals_by_category[episode.goals_key]
-            episode.goals = [MultiGoal(**i) for i in episode.goals]
+            #episode.goals = [MultiGoal(**i) for i in episode.goals]
 
+            """
             if episode.shortest_paths is not None:
                 for path in episode.shortest_paths:
                     for p_index, point in enumerate(path):
@@ -191,5 +195,6 @@ class MaximumInfoDatasetV1(Dataset):
                             }
 
                         path[p_index] = ShortestPathPoint(**point)
+            """
 
             self.episodes.append(episode)

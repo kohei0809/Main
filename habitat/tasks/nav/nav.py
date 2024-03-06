@@ -81,8 +81,8 @@ class RoomGoal(NavigationGoal):
 
 @attr.s(auto_attribs=True, kw_only=True)
 class MaximumInformationEpisode(Episode):
+    """
     start_room: Optional[str] = None
-    
     shortest_paths: Optional[List[ShortestPathPoint]] = None
     goals: List[NavigationGoal] = attr.ib(
         default=None, validator=not_none_validator
@@ -90,6 +90,7 @@ class MaximumInformationEpisode(Episode):
     object_category: Optional[List[str]] = None
     object_index: Optional[int] = None
     currGoalIndex: Optional[int] = 0 
+    """
 
 @attr.s(auto_attribs=True, kw_only=True)
 class NavigationEpisode(Episode):
@@ -503,10 +504,10 @@ class CI(Measure):
         take_picture=True
         if take_picture:
             #print(observation)
-            #measure = self._calCI()
-            #self._metric = measure[0]
-            #self._matrics = measure[1]
-            self._metric = 0 
+            measure = self._calCI()
+            self._metric = measure[0]
+            self._matrics = measure[1]
+            #self._metric = 0 
         else:
             self._metric = 0 
             
@@ -534,10 +535,10 @@ class CI(Measure):
         #objectのスコア別リスト
         #void, wall, floor, door, stairs, ceiling, column, railing
         score0 = [0, 1, 2, 4, 16, 17, 24, 30] 
-        #chair, table, picture, cabinet, window, sofa, bed, curtain, chest_of_drawers, sink, toilet, stool, shower, bathtub, counter, lighting, beam, shelving, blinds, seating, objects
-        score1 = [3, 5, 6, 7, 9, 10, 11, 12, 13, 15, 18, 19, 23, 25, 26, 28, 29, 31, 32, 34, 39]
-        #cushion, plant, towel, mirror, tv_monitor, fireplace, gym_equipment, board_panel, furniture, appliances, clothes
-        score2 = [8, 14, 20, 21, 22, 27, 33, 35, 36, 37, 38]
+        #chair, table, picture, cabinet, window, curtain, chest_of_drawers, sink, toilet, stool, shower, bathtub, counter, lighting, beam, shelving, blinds, seating, objects
+        score1 = [3, 5, 6, 7, 9, 12, 13, 15, 18, 19, 23, 25, 26, 28, 29, 31, 32, 34, 39]
+        #cushion, sofa, bed, plant, towel, mirror, tv_monitor, fireplace, gym_equipment, board_panel, furniture, appliances, clothes
+        score2 = [8, 10, 11, 14, 20, 21, 22, 27, 33, 35, 36, 37, 38]
     
         #objectのcategoryリスト
         category = []
@@ -545,6 +546,7 @@ class CI(Measure):
         ci = 0.0
         for i in range(H):
             for j in range(W):
+                """
                 #領域スコア
                 if i >= 96 and i <= 159 and j >= 96 and j <= 159:
                     w = self._config.HIGH_REGION_WEIGHT
@@ -556,6 +558,7 @@ class CI(Measure):
                 #オブジェクトまでの距離
                 d = max(depth_obs[i][j], 1.0)
                 d = math.sqrt(d)
+                """
                 
                 obs = semantic_obs[i][j]
                 if obs in score0:
@@ -569,7 +572,8 @@ class CI(Measure):
                     else:
                         v = self._config.HIGH_CATEGORY_VALUE
                 
-                score = w * v / d
+                #score = w * v / d
+                score = v
                 ci += score
                 #imp_matrics[i][j] = score
         
@@ -1289,9 +1293,11 @@ class TopDownMap(Measure):
         self.update_fog_of_war_mask(np.array([a_x, a_y]))
 
         # draw source and target parts last to avoid overlap
+        """
         self._draw_goals_view_points(episode)
         self._draw_goals_aabb(episode)
         self._draw_goals_positions(episode)
+        """
 
         if self._config.DRAW_SOURCE:
             self._draw_point(

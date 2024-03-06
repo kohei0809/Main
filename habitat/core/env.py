@@ -25,7 +25,7 @@ from habitat_baselines.common.utils import quat_from_angle_axis
 from habitat.core.logging import logger
 from utils.log_manager import LogManager
 from utils.log_writer import LogWriter
-import habitat.articulated_agents.humanoids.kinematic_humanoid as kinematic_humanoid
+#import habitat.articulated_agents.humanoids.kinematic_humanoid as kinematic_humanoid
 
 import matplotlib.pyplot as plt
 
@@ -256,6 +256,7 @@ class Env:
         self.reconfigure(self._config)
         
         # Remove existing objects from last episode
+        """
         for objid in self._sim._sim.get_existing_object_ids():  
             self._sim._sim.remove_object(objid)
 
@@ -268,8 +269,10 @@ class Env:
             dataset_index = object_to_datset_mapping[current_goal]
             ind = self._sim._sim.add_object(dataset_index)
             self._sim._sim.set_translation(np.array(self.current_episode.goals[i].position), ind)
+        """
             
         ############################################################
+        """
         humanoid_name1 = "male_1"
         humanoid_path1 = f"data/humanoids/humanoid_data/{humanoid_name1}/{humanoid_name1}.urdf"
         agent_config1 = DictConfig(
@@ -284,7 +287,7 @@ class Env:
         kin_humanoid1.base_pos = mn.Vector3(2, 0, 7.3)
         kin_humanoid1.base_rot = -1.57
         logger.info("Insert Humanoid")
-        
+        """
         ###########################################################
 
         observations = self.task.reset(episode=self.current_episode)
@@ -300,13 +303,6 @@ class Env:
         )
 
         if self._config.TRAINER_NAME in ["oracle", "oracle-ego"]:
-            for i in range(len(self.current_episode.goals)):
-                loc0 = self.current_episode.goals[i].position[0]
-                loc2 = self.current_episode.goals[i].position[2]
-                grid_loc = self.conv_grid(loc0, loc2)
-                objIndexOffset = 1 if self._config.TRAINER_NAME == "oracle" else 2
-                self.currMap[grid_loc[0]-1:grid_loc[0]+2, grid_loc[1]-1:grid_loc[1]+2, 1] = object_to_datset_mapping[self.current_episode.goals[i].object_category] + objIndexOffset
-
             currPix = self.conv_grid(observations["agent_position"][0], observations["agent_position"][2])  ## Explored area marking
 
             if self._config.TRAINER_NAME == "oracle-ego":
@@ -320,15 +316,7 @@ class Env:
             
             patch = patch[currPix[0]-40:currPix[0]+40, currPix[1]-40:currPix[1]+40,:]
             patch = ndimage.interpolation.rotate(patch, -(observations["heading"][0] * 180/np.pi) + 90, order=0, reshape=False)
-            observations["semMap"] = patch[40-25:40+25, 40-25:40+25, :]
-            """
-
-            #patch = patch[currPix[0]-70:currPix[0]+70, currPix[1]-70:currPix[1]+70,:]
-            patch_ = self.create_egocentric_map(patch, currPix, 70)
-            patch = ndimage.interpolation.rotate(patch_, -(observations["heading"][0] * 180/np.pi) + 90, order=0, reshape=False)
-            observations["semMap_mini"] = self.resize_semMap(patch_[70-25:70+25, 70-25:70+25, :], 50, 100)
-            observations["semMap_big"] = patch_[70-50:70+50, 70-50:70+50, :]
-            """             
+            observations["semMap"] = patch[40-25:40+25, 40-25:40+25, :]           
         return observations
     
     def create_egocentric_map(self, patch, currPix, clip_range):
@@ -546,7 +534,7 @@ class RLEnv(gym.Env):
         :return: :py:`(observations, reward, done, info)`
         """
 
-        reward = self.get_reward(None, **kwargs)
+        reward = self.get_reward2(None, **kwargs)
         done = self.get_done(None)
         info = self.get_info(None)
 

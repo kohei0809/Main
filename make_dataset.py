@@ -4,9 +4,10 @@ import random
 import numpy as np
 from gym import spaces
 import gzip
+import pathlib
 
+import pandas as pd
 from matplotlib import pyplot as plt
-
 from PIL import Image
 
 from habitat_sim.utils.common import d3_40_colors_rgb
@@ -19,11 +20,14 @@ from habitat.core.env import Env
 
    
 if __name__ == '__main__':
+    save_train = True
+    save_val = True
+    save_test = True
+    
     exp_config = "./habitat_baselines/config/maximuminfo/ppo_maximuminfo.yaml"
     opts = None
     config = get_config(exp_config, opts)
-    print(config)
-    
+    #print(config)
         
     config.defrost()
     config.TASK_CONFIG.SIMULATOR.DEPTH_SENSOR.NORMALIZE_DEPTH = False
@@ -45,54 +49,101 @@ if __name__ == '__main__':
     episode_num = 20000
     
     i = 0
-    dataset_path = "data/datasets/v4/maximum/"
-    dataset = MaximumInfoDatasetV1()
+    dataset_path = "data/datasets/maximuminfo/v2/"
+    dataset_train = MaximumInfoDatasetV1()
+    dataset_val = MaximumInfoDatasetV1()
+    dataset_test = MaximumInfoDatasetV1()
     split = ""
+    #フォルダがない場合は、作成
+    p_dir = pathlib.Path(dataset_path + "train")
+    if not p_dir.exists():
+        p_dir.mkdir(parents=True)
+    p_dir = pathlib.Path(dataset_path + "val")
+    if not p_dir.exists():
+        p_dir.mkdir(parents=True)
+    p_dir = pathlib.Path(dataset_path + "test")
+    if not p_dir.exists():
+        p_dir.mkdir(parents=True)
+        
+    # ファイルを読み込んで行ごとにリストに格納する
+    with open('data/scene_datasets/mp3d/description.txt', 'r') as file:
+        lines = file.readlines()
+
+    # scene id と文章を抽出してデータフレームに変換する
+    scene_ids = []
+    types = []
+    descriptions = []
+    for i in range(0, len(lines), 3):
+        scene_ids.append(lines[i].strip())
+        types.append(lines[i+1].strip())
+        descriptions.append(lines[i+2].strip())
+
+    df = pd.DataFrame({'scene_id': scene_ids, 'type': types, 'description': descriptions})      
+            
     while(True):
-        config.defrost()
-        if i < train_scene_num:
+        if i >= len(dirs):
+            break
+        scene = dirs[i]
+        if df[df["scene_id"]==scene]["type"].item()=="train":
+            config.defrost()
             split = "train"
             episode_num = 20000
-        elif i < train_scene_num+val_scene_num:
-            if i == train_scene_num:
-                #datasetを.gzに圧縮
-                with gzip.open(dataset_path + split + "/" + split +  ".json.gz", "wt") as f:
-                    random.shuffle(dataset.episodes)
-                    f.write(dataset.to_json())
-                    
-                dataset = MaximumInfoDatasetV1()
-                    
+            config.TASK_CONFIG.SIMULATOR.SCENE = "data/scene_datasets/mp3d/" + scene + "/" + scene + ".glb"
+            config.TASK_CONFIG.DATASET.DATA_PATH = dataset_path + split + "/" + split +  ".json.gz"
+            config.TASK_CONFIG.DATASET.DATA_PATH = dataset_path + split + "/" + split +  ".json.gz"
+            config.freeze()
+        
+            sim = HabitatSim(config=config.TASK_CONFIG.SIMULATOR)
+            dataset_train.episodes += generate_maximuminfo_episode(sim=sim, num_episodes=episode_num)
+            
+        elif df[df["scene_id"]==scene]["type"].item()=="val":
+            config.defrost()
             split = "val"
-            episode_num = 7
-        elif i < train_scene_num+val_scene_num+test_scene_num:
-            if i == train_scene_num+val_scene_num:
-                #datasetを.gzに圧縮
-                with gzip.open(dataset_path + split + "/" + split +  ".json.gz", "wt") as f:
-                    random.shuffle(dataset.episodes)
-                    f.write(dataset.to_json())
-                    
-                dataset = MaximumInfoDatasetV1()
-                
+            episode_num = 100
+            config.TASK_CONFIG.SIMULATOR.SCENE = "data/scene_datasets/mp3d/" + scene + "/" + scene + ".glb"
+            config.TASK_CONFIG.DATASET.DATA_PATH = dataset_path + split + "/" + split +  ".json.gz"
+            config.TASK_CONFIG.DATASET.DATA_PATH = dataset_path + split + "/" + split +  ".json.gz"
+            config.freeze()
+        
+            sim = HabitatSim(config=config.TASK_CONFIG.SIMULATOR)
+            dataset_val.episodes += generate_maximuminfo_episode(sim=sim, num_episodes=episode_num)
+
+        elif df[df["scene_id"]==scene]["type"].item()=="test":
+            config.defrost()
             split = "test"
             episode_num = 500
+            config.TASK_CONFIG.SIMULATOR.SCENE = "data/scene_datasets/mp3d/" + scene + "/" + scene + ".glb"
+            config.TASK_CONFIG.DATASET.DATA_PATH = dataset_path + split + "/" + split +  ".json.gz"
+            config.TASK_CONFIG.DATASET.DATA_PATH = dataset_path + split + "/" + split +  ".json.gz"
+            config.freeze()
+        
+            sim = HabitatSim(config=config.TASK_CONFIG.SIMULATOR)
+            dataset_test.episodes += generate_maximuminfo_episode(sim=sim, num_episodes=episode_num)
+
         else:
             break
-            
-        scene = dirs[i]
-        config.TASK_CONFIG.SIMULATOR.SCENE = "data/scene_datasets/mp3d/" + scene + "/" + scene + ".glb"
-        config.TASK_CONFIG.DATASET.DATA_PATH = dataset_path + split + "/" + split +  ".json.gz"
-        config.TASK_CONFIG.DATASET.DATA_PATH = dataset_path + split + "/" + split +  ".json.gz"
-        config.freeze()
+
         
-        sim = HabitatSim(config=config.TASK_CONFIG.SIMULATOR)
-        dataset.episodes += generate_maximuminfo_episode(sim=sim, num_episodes=episode_num)
-        print(str(i) + ": SPLIT:" + split + ", NUM:" + str(episode_num) + ", TOTAL_NUM:" + str(len(dataset.episodes)))
+        print(str(i) + ": SPLIT:train, NUM:" + str(episode_num) + ", TOTAL_NUM:" + str(len(dataset_train.episodes)))
         print("SCENE:" + scene)
         sim.close()
         
         i += 1
 
     #datasetを.gzに圧縮
-    with gzip.open(dataset_path + split + "/" + split +  ".json.gz", "wt") as f:
-        f.write(dataset.to_json())
-                    
+    if save_train:
+        with gzip.open(dataset_path + "train/train.json.gz", "wt") as f:
+            random.shuffle(dataset_train.episodes)
+            f.write(dataset_train.to_json())
+            print("save train")
+    #datasetを.gzに圧縮
+    if save_val:
+        with gzip.open(dataset_path + "val/val.json.gz", "wt") as f:
+            f.write(dataset_val.to_json())
+            print("save val")
+    #datasetを.gzに圧縮
+    if save_test:
+        with gzip.open(dataset_path + "test/test.json.gz", "wt") as f:
+            f.write(dataset_test.to_json())
+            print("save test")
+                        

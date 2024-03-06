@@ -281,15 +281,14 @@ def make_dataset(scene_idx, z_list):
     #datasetを.gzに圧縮
     with gzip.open(dataset_path, "wt") as f:
         f.write(dataset.to_json())
-             
-                
+
 if __name__ == '__main__':
     scene_idx = 71
     z_list = [3.8914499282836914, -3.508549928665161, 0.09144997596740723] 
     navでのpictureのところを修正する
     #research_valid_z(scene_idx)
     #make_dataset(scene_idx, z_list)    
-    research_ci(scene_idx)
+    #research_ci(scene_idx)
     #check_dir()
     
     logger.info("################# FINISH EXPERIMENT !!!!! ##########################")

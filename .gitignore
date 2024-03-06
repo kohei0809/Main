@@ -193,9 +193,12 @@ tb/
 train.log
 cpt/
 exp/
+*.csv
 taken_picture/
 *.txt
 o.*
 video_dir/
 log/
 result/
+map_dataset/
+research_ci_and_similarity/

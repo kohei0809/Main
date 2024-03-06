@@ -145,8 +145,10 @@ class InfoRLEnv(RLEnv):
         self.fog_of_war_map_all = None
         observations = super().reset()
         self._previous_area = 0.0
+        """
         self._previous_distance = self._env.get_metrics()["distance_to_multi_goal"]
         self._previous_distance *= 5
+        """
         
         return observations
 
@@ -188,8 +190,9 @@ class InfoRLEnv(RLEnv):
         return rate
 
     def get_reward(self, observations, **kwargs):
-        reward = self._rl_config.SLACK_REWARD
-        ci = -sys.float_info.max
+        #reward = self._rl_config.SLACK_REWARD
+        reward = 0
+        ci = -1000
         matrics = None
         
         agent_position = self._env._sim.get_agent_state().position
@@ -203,10 +206,12 @@ class InfoRLEnv(RLEnv):
         agent_position = np.array([a_x, a_y])
         
         # distance_to_multi_goalの計算
+        """
         current_distance = self._env.get_metrics()["distance_to_multi_goal"]
         current_distance *= 5
         out = self._previous_distance
         self._previous_distance = current_distance
+        """
         
         # area_rewardの計算
         info = self.get_info(observations)
@@ -214,7 +219,7 @@ class InfoRLEnv(RLEnv):
         _fog_of_war_map = info["top_down_map"]["fog_of_war_mask"]
         
         current_area = self._cal_explored_rate(_top_down_map, _fog_of_war_map)
-        current_area *= 50
+        current_area *= 10
 
         if self._take_picture():
             measure = self._env.get_metrics()[self._picture_measure_name]
@@ -226,7 +231,50 @@ class InfoRLEnv(RLEnv):
         output = self._previous_area
         self._previous_area = current_area
 
-        return [reward, ci, current_area, output, current_distance, out], matrics
+        return [reward, ci, current_area, output], matrics     
+    
+    def get_reward2(self, observations, **kwargs):
+        #reward = self._rl_config.SLACK_REWARD
+        reward = 0
+        ci = -1000
+        matrics = None
+        
+        agent_position = self._env._sim.get_agent_state().position
+        a_x, a_y = maps.to_grid(
+            agent_position[0],
+            agent_position[2],
+            self._coordinate_min,
+            self._coordinate_max,
+            self._map_resolution,
+        )
+        agent_position = np.array([a_x, a_y])
+        
+        # distance_to_multi_goalの計算
+        """
+        current_distance = self._env.get_metrics()["distance_to_multi_goal"]
+        current_distance *= 5
+        out = self._previous_distance
+        self._previous_distance = current_distance
+        """
+        
+        # area_rewardの計算
+        info = self.get_info(observations)
+        _top_down_map = info["top_down_map"]["map"]
+        _fog_of_war_map = info["top_down_map"]["fog_of_war_mask"]
+        
+        current_area = self._cal_explored_rate(_top_down_map, _fog_of_war_map)
+        current_area *= 10
+
+        measure = self._env.get_metrics()[self._picture_measure_name]
+        ci, matrics = measure[0], measure[1]
+            
+        # area_rewardを足す
+        area_reward = current_area - self._previous_area
+        reward += area_reward
+        output = self._previous_area
+        self._previous_area = current_area
+
+        return [reward, ci, current_area, output], matrics        
     
     def get_polar_angle(self):
         agent_state = self._env._sim.get_agent_state()

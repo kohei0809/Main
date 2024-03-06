@@ -21,10 +21,11 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--run-type",
-        choices=["train", "eval"],
-        required=True,
+        choices=["train", "eval", "random", "random2"],
+        default=None,
         help="run type of the experiment (train or eval)",
     )
+    """
     parser.add_argument(
         "--exp-config",
         type=str,
@@ -38,6 +39,7 @@ def main():
         required=True,
         help="agent type: oracle, oracleego, projneural, objrecog",
     )
+    """
 
     parser.add_argument(
         "opts",
@@ -47,7 +49,8 @@ def main():
     )
 
     args = parser.parse_args()
-    run_exp(**vars(args))
+    #run_exp(**vars(args))
+    test(**vars(args))
 
 
 def run_exp(exp_config: str, run_type: str, agent_type: str, opts=None) -> None:
@@ -117,12 +120,17 @@ def run_exp(exp_config: str, run_type: str, agent_type: str, opts=None) -> None:
     print("End at " + end_date)
     
 
-def test():
+def test(run_type: str, opts=None):    
     exp_config = "habitat_baselines/config/maximuminfo/ppo_maximuminfo.yaml"
     agent_type = "oracle-ego"
-    run_type = "train"
-    run_type = "eval"
-    #run_type = "grad_cam"
+    
+    if run_type is None:
+        run_type = "train"
+        run_type = "eval"
+        run_type = "random"
+        #run_type = "random2"
+        
+    logger.info("RUN TYPE: " + run_type)
     start_date = datetime.datetime.now().strftime('%y-%m-%d %H-%M-%S') 
     
     config = get_config(exp_config)
@@ -130,36 +138,41 @@ def test():
     if run_type == "train":
         datadate = "" 
         config.defrost()
-        config.NUM_PROCESSES = 20
+        config.NUM_PROCESSES = 40
         config.RL.PPO.num_mini_batch = 4
         config.freeze()
     elif run_type == "eval":
         #datadate = "23-10-26 18-29-56"
-        datadate = "23-12-22 23-13-05"
-        datadate = "24-01-08 12-14-22"
+        #datadate = "23-12-22 23-13-05"
+        #datadate = "24-01-08 12-14-22"
         #datadate = "24-01-13 12-21-17"
+        datadate = "24-02-18 15-24-41"
+        datadate = "24-02-20 18-05-03"
+        datadate = "24-02-21 23-05-39"
+        datadate = "24-02-24 06-09-40"
+
         config.defrost()
         config.NUM_PROCESSES = 60
-        config.TEST_EPISODE_COUNT = 1000
-        #config.TEST_EPISODE_COUNT = 10
-        config.VIDEO_OPTION = []
-        #config.VIDEO_OPTION = ["disk"]
-        config.freeze()
-    elif run_type == "grad_cam":
-        datadate = "24-01-13 12-21-17"
-        config.defrost()
-        config.NUM_PROCESSES = 1
-        config.RL.PPO.num_mini_batch = 1
-        config.TEST_EPISODE_COUNT = 1
+        config.TEST_EPISODE_COUNT = 1100
+        #config.VIDEO_OPTION = []
         config.VIDEO_OPTION = ["disk"]
         config.freeze()
-        
+    elif run_type=="random" or run_type=="random2":
+        datadate = "" 
+        config.defrost()
+        config.TASK_CONFIG.DATASET.SPLIT = "val"
+        config.NUM_PROCESSES = 60
+        config.TEST_EPISODE_COUNT = 1100
+        #config.VIDEO_OPTION = []
+        config.VIDEO_OPTION = ["disk"]
+        config.freeze()
     
     random.seed(config.TASK_CONFIG.SEED)
     np.random.seed(config.TASK_CONFIG.SEED)
     
     config.defrost()
-    config.TASK_CONFIG.DATASET.DATA_PATH = "data/datasets/multinav/3_ON/{split}/{split}.json.gz"
+    #config.TASK_CONFIG.DATASET.DATA_PATH = "data/datasets/multinav/3_ON/{split}/{split}.json.gz"
+    config.TASK_CONFIG.DATASET.DATA_PATH = "data/datasets/maximuminfo/v1/{split}/{split}.json.gz"
     config.TRAINER_NAME = agent_type
     config.TASK_CONFIG.TRAINER_NAME = agent_type
     config.CHECKPOINT_FOLDER = "cpt/" + start_date
@@ -168,8 +181,6 @@ def test():
     
     if agent_type in ["oracle", "oracle-ego", "no-map"]:
         trainer_init = baseline_registry.get_trainer("oracle")
-        #trainer_init = baseline_registry.get_trainer("oracle2")
-        #trainer_init = baseline_registry.get_trainer("oracle3")
         config.defrost()
         config.RL.PPO.hidden_size = 512 if agent_type=="no-map" else 768
         config.TASK_CONFIG.SIMULATOR.DEPTH_SENSOR.NORMALIZE_DEPTH = False
@@ -211,16 +222,19 @@ def test():
     elif run_type == "eval":
         trainer.eval(log_manager, start_date)
     
-    elif run_type == "grad_cam":
-        trainer.grad_cam(log_manager, start_date)
+    elif run_type == "random":
+        trainer.random_eval(log_manager, start_date)
+    
+    elif run_type == "random2":
+        trainer.random_eval2(log_manager, start_date)
        
     end_date = datetime.datetime.now().strftime('%y-%m-%d %H-%M-%S') 
     print("Start at " + start_date)
     print("End at " + end_date)
 
 if __name__ == "__main__":
-    #main()
-    test()
+    main()
+    #test()
 
     #MIN_DEPTH: 0.5
     #MAX_DEPTH: 5.0

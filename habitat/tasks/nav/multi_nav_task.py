@@ -119,8 +119,8 @@ class MultiGoal(NavigationGoal):
 
 
 
-@registry.register_sensor
-class MultiGoalSensor(Sensor):
+#@registry.register_sensor
+#class MultiGoalSensor(Sensor):
     r"""A sensor for Object Goal specification as observations which is used in
     ObjectGoal Navigation. The goal is expected to be specified by object_id or
     semantic category id.
@@ -136,6 +136,7 @@ class MultiGoalSensor(Sensor):
         of categories id to text mapping.
     """
 
+    """
     def __init__(
         self, sim, config: Config, dataset: Dataset, *args: Any, **kwargs: Any
     ):
@@ -186,6 +187,7 @@ class MultiGoalSensor(Sensor):
             raise RuntimeError(
                 "Wrong GOAL_SPEC specified for ObjectGoalSensor."
             )
+        """
 
 
 @registry.register_task(name="MultiNav-v1")

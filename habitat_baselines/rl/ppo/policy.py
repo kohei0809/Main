@@ -125,7 +125,7 @@ class ProposedPolicyOracle(PolicyOracle):
         agent_type,
         observation_space,
         action_space,
-        goal_sensor_uuid,
+        #goal_sensor_uuid,
         device,
         object_category_embedding_size,
         previous_action_embedding_size,
@@ -138,7 +138,7 @@ class ProposedPolicyOracle(PolicyOracle):
                 agent_type,
                 observation_space=observation_space,
                 hidden_size=hidden_size,
-                goal_sensor_uuid=goal_sensor_uuid,
+                #goal_sensor_uuid=goal_sensor_uuid,
                 device=device,
                 object_category_embedding_size=object_category_embedding_size,
                 previous_action_embedding_size=previous_action_embedding_size,
@@ -262,15 +262,11 @@ class ProposedNetOracle(Net):
     goal vector with CNN's output and passes that through RNN.
     """
 
-    def __init__(self, agent_type, observation_space, hidden_size, goal_sensor_uuid, device, 
+    def __init__(self, agent_type, observation_space, hidden_size, device, 
         object_category_embedding_size, previous_action_embedding_size, use_previous_action
     ):
         super().__init__()
         self.agent_type = agent_type
-        self.goal_sensor_uuid = goal_sensor_uuid
-        self._n_input_goal = observation_space.spaces[
-            self.goal_sensor_uuid
-        ].shape[0]
         self._hidden_size = hidden_size
         self.device = device
         self.use_previous_action = use_previous_action
@@ -279,17 +275,13 @@ class ProposedNetOracle(Net):
         
         if agent_type == "oracle-ego":
             self.map_encoder = MapCNN(50, 256, agent_type)
-            #self.map_encoder = MapCNN(100, 256, agent_type)
             self.occupancy_embedding = nn.Embedding(4, 16)
-            self.object_embedding = nn.Embedding(10, 16)
-            self.goal_embedding = nn.Embedding(9, object_category_embedding_size)
         
         self.action_embedding = nn.Embedding(4, previous_action_embedding_size)
 
         if self.use_previous_action:
             self.state_encoder = RNNStateEncoder(
-                (self._hidden_size) + object_category_embedding_size + 
-                previous_action_embedding_size, self._hidden_size,
+                (self._hidden_size) + previous_action_embedding_size, self._hidden_size,
             )
         else:
             self.state_encoder = RNNStateEncoder(
@@ -308,13 +300,9 @@ class ProposedNetOracle(Net):
     @property
     def num_recurrent_layers(self):
         return self.state_encoder.num_recurrent_layers
-    
-    def get_target_encoding(self, observations):
-        return observations[self.goal_sensor_uuid]
 
     def forward(self, observations, rnn_hidden_states, prev_actions, masks):
-        target_encoding = self.get_target_encoding(observations)
-        x = [self.goal_embedding((target_encoding).type(torch.LongTensor).to(self.device)).squeeze(1)]
+        x = []
         bs = observations['rgb'].shape[0]
         if not self.is_blind:
             perception_embed = self.visual_encoder(observations)
@@ -324,18 +312,14 @@ class ProposedNetOracle(Net):
         
         global_map = observations['semMap']
         global_map_embedding.append(self.occupancy_embedding(global_map[:, :, :, 0].type(torch.LongTensor).to(self.device).view(-1)).view(bs, 50, 50 , -1))
-        global_map_embedding.append(self.object_embedding(global_map[:, :, :, 1].type(torch.LongTensor).to(self.device).view(-1)).view(bs, 50, 50, -1))
-        """
-        global_map_mini = observations['semMap_mini']
-        global_map_big = observations['semMap_big']
-        global_map_embedding.append(self.occupancy_embedding(global_map_mini[:, :, :, 0].type(torch.LongTensor).to(self.device).view(-1)).view(bs, 100, 100 , -1))
-        global_map_embedding.append(self.occupancy_embedding(global_map_big[:, :, :, 0].type(torch.LongTensor).to(self.device).view(-1)).view(bs, 100, 100 , -1))
-        """
+        #global_map_embedding.append(self.object_embedding(global_map[:, :, :, 1].type(torch.LongTensor).to(self.device).view(-1)).view(bs, 50, 50, -1))
         
+        """
         global_map_embedding.append(self.object_embedding(global_map_mini[:, :, :, 1].type(torch.LongTensor).to(self.device).view(-1)).view(bs, 100, 100, -1))
         global_map_embedding.append(self.object_embedding(global_map_big[:, :, :, 1].type(torch.LongTensor).to(self.device).view(-1)).view(bs, 100, 100, -1))
-        
+        """
         global_map_embedding = torch.cat(global_map_embedding, dim=3)
+        
         map_embed = self.map_encoder(global_map_embedding)
         x = [map_embed] + x
             
