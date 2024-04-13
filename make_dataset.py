@@ -87,9 +87,8 @@ if __name__ == '__main__':
         if df[df["scene_id"]==scene]["type"].item()=="train":
             config.defrost()
             split = "train"
-            episode_num = 20000
+            episode_num = 100000
             config.TASK_CONFIG.SIMULATOR.SCENE = "data/scene_datasets/mp3d/" + scene + "/" + scene + ".glb"
-            config.TASK_CONFIG.DATASET.DATA_PATH = dataset_path + split + "/" + split +  ".json.gz"
             config.TASK_CONFIG.DATASET.DATA_PATH = dataset_path + split + "/" + split +  ".json.gz"
             config.freeze()
         
@@ -102,7 +101,6 @@ if __name__ == '__main__':
             episode_num = 100
             config.TASK_CONFIG.SIMULATOR.SCENE = "data/scene_datasets/mp3d/" + scene + "/" + scene + ".glb"
             config.TASK_CONFIG.DATASET.DATA_PATH = dataset_path + split + "/" + split +  ".json.gz"
-            config.TASK_CONFIG.DATASET.DATA_PATH = dataset_path + split + "/" + split +  ".json.gz"
             config.freeze()
         
             sim = HabitatSim(config=config.TASK_CONFIG.SIMULATOR)
@@ -113,7 +111,6 @@ if __name__ == '__main__':
             split = "test"
             episode_num = 500
             config.TASK_CONFIG.SIMULATOR.SCENE = "data/scene_datasets/mp3d/" + scene + "/" + scene + ".glb"
-            config.TASK_CONFIG.DATASET.DATA_PATH = dataset_path + split + "/" + split +  ".json.gz"
             config.TASK_CONFIG.DATASET.DATA_PATH = dataset_path + split + "/" + split +  ".json.gz"
             config.freeze()
         

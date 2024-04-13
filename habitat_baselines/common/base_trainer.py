@@ -88,30 +88,15 @@ class BaseRLTrainerOracle(BaseTrainer):
                 len(self.config.VIDEO_DIR) > 0
             ), "Must specify a directory for storing videos on disk"
 
-        with TensorboardWriter(
-            self.config.TENSORBOARD_DIR_EVAL, flush_secs=self.flush_secs
-        ) as writer:
-            if os.path.isfile(self.config.EVAL_CKPT_PATH_DIR):
-                # evaluate singe checkpoint
-                self._eval_checkpoint(self.config.EVAL_CKPT_PATH_DIR, writer)
-            else:
-                # evaluate multiple checkpoints in order
-                prev_ckpt_ind = 1482
-                while True:
-                    current_ckpt = None
-                    while current_ckpt is None:
-                        current_ckpt = poll_checkpoint_folder(
-                            self.config.EVAL_CKPT_PATH_DIR, prev_ckpt_ind
-                        )
-                        # time.sleep(2)   # sleep for 2 secs before polling again
-                    logger.info(f"=======current_ckpt: {current_ckpt}=======")
-                    prev_ckpt_ind += 1
-                    self._eval_checkpoint(
-                        checkpoint_path=current_ckpt,
-                        log_manager=log_manager,
-                        date=date,
-                        checkpoint_index=prev_ckpt_ind,
-                    )
+        # evaluate multiple checkpoints in order
+        current_ckpt = 684
+        logger.info(f"=======current_ckpt: {current_ckpt}=======")
+        self._eval_checkpoint(
+            checkpoint_path=current_ckpt,
+            log_manager=log_manager,
+            date=date,
+            checkpoint_index=prev_ckpt_ind,
+        )
 
     def _setup_eval_config(self, checkpoint_config: Config) -> Config:
         r"""Sets up and returns a merged config for evaluation. Config
@@ -190,9 +175,11 @@ class BaseRLTrainerOracle(BaseTrainer):
         current_episode_exp_area,
         current_episode_ci,
         current_episode_similarity,
+        current_episode_each_sim,
         prev_actions,
         batch,
         rgb_frames,
+        rgb_obs=[],
     ):
         # pausing self.envs with no new episode
         if len(envs_to_pause) > 0:
@@ -210,12 +197,15 @@ class BaseRLTrainerOracle(BaseTrainer):
             current_episode_exp_area = current_episode_exp_area[state_index]
             current_episode_ci = current_episode_ci[state_index]
             current_episode_similarity = current_episode_similarity[state_index]
+            current_episode_each_sim = current_episode_each_sim[state_index]
             prev_actions = prev_actions[state_index]
 
             for k, v in batch.items():
                 batch[k] = v[state_index]
 
             rgb_frames = [rgb_frames[i] for i in state_index]
+            if len(rgb_obs) != 0:
+                rgb_obs = [rgb_obs[i] for i in state_index]
 
         return (
             envs,
@@ -225,7 +215,9 @@ class BaseRLTrainerOracle(BaseTrainer):
             current_episode_exp_area,
             current_episode_ci,
             current_episode_similarity,
+            current_episode_each_sim,
             prev_actions,
             batch,
             rgb_frames,
+            rgb_obs,
         )

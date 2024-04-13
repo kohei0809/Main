@@ -20,6 +20,7 @@ def _create_episode(episode_id, scene_id, start_position, start_rotation) -> Opt
         scene_id=scene_id,
         start_position=start_position,
         start_rotation=start_rotation,
+        description=""
     )
 
 

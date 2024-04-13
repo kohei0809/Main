@@ -202,3 +202,5 @@ log/
 result/
 map_dataset/
 research_ci_and_similarity/
+*.pth
+*.jpg

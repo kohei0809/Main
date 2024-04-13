@@ -504,7 +504,8 @@ class CI(Measure):
         take_picture=True
         if take_picture:
             #print(observation)
-            measure = self._calCI()
+            #measure = self._calCI()
+            measure = 0, None
             self._metric = measure[0]
             self._matrics = measure[1]
             #self._metric = 0 
@@ -536,9 +537,14 @@ class CI(Measure):
         #void, wall, floor, door, stairs, ceiling, column, railing
         score0 = [0, 1, 2, 4, 16, 17, 24, 30] 
         #chair, table, picture, cabinet, window, curtain, chest_of_drawers, sink, toilet, stool, shower, bathtub, counter, lighting, beam, shelving, blinds, seating, objects
-        score1 = [3, 5, 6, 7, 9, 12, 13, 15, 18, 19, 23, 25, 26, 28, 29, 31, 32, 34, 39]
+        #score1 = [3, 5, 6, 7, 9, 12, 13, 15, 18, 19, 23, 25, 26, 28, 29, 31, 32, 34, 39]
         #cushion, sofa, bed, plant, towel, mirror, tv_monitor, fireplace, gym_equipment, board_panel, furniture, appliances, clothes
-        score2 = [8, 10, 11, 14, 20, 21, 22, 27, 33, 35, 36, 37, 38]
+        #score2 = [8, 10, 11, 14, 20, 21, 22, 27, 33, 35, 36, 37, 38]
+    
+        #############
+        score1 = []
+        score2 = [3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 18, 19, 20, 21, 22, 23, 25, 26, 27, 28, 29, 31, 32, 33, 34, 35, 36, 37, 38, 39]
+        ##############
     
         #objectのcategoryリスト
         category = []
@@ -577,7 +583,7 @@ class CI(Measure):
                 ci += score
                 #imp_matrics[i][j] = score
         
-        ci *= max(len(category), 1.0)
+        #ci *= max(len(category), 1.0)
         ci /= size
         return ci, imp_matrics
         

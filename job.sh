@@ -1,17 +1,20 @@
 #!/bin/sh
 #$ -cwd
-#$ -l f_node=1
+#$ -l node_f=1
 #$ -j y
-#$ -l h_rt=:12:00:00
+#$ -l h_rt=:05:00:00
 #$ -o output/o.$JOB_ID
 
-source ~/anaconda3/etc/profile.d/conda.sh
+. /etc/profile.d/modules.sh
 
-module load cuda
-module load gcc/8.3.0-cuda
-module load singularity
-module load nccl
-module load cudnn
-module load openmpi/3.1.4-opa10.10
+module load openmpi/5.0.2-gcc
+module load cuda/12.1.0 
 
-singularity exec -f --nv --bind /gs/hs0/tga-aklab/matsumoto://root/work ./../nvidia_cudagl.img ./work/Main/exec.sh
+#apptainer exec --nv ./../ubuntu_latest.sif /gs/fs/tga-aklab/matsumoto/Main/exec.sh
+apptainer shell --nv ./../ubuntu_latest.sif
+
+pwd
+cd /gs/fs/tga-aklab/matsumoto/Main
+. /home/7/ur02047/anaconda3/etc/profile.d/conda.sh
+conda activate habitat
+CUDA_LAUNCH_BLOCKING=1 python make_saliency_and_similarity.py

@@ -171,11 +171,11 @@ def generate_video(
             metric_strs.append(f"{k}={v:.2f}")
 
     if name_ci is None:
-        video_name = f"episode={episode_id}-ckpt={checkpoint_idx}-" + "-".join(
+        video_name = f"episode={episode_id}-".join(
             metric_strs
         )
     else:
-        video_name = f"episode={episode_id}-ckpt={checkpoint_idx}-" + str(name_ci)
+        video_name = f"episode={episode_id}-" + str(name_ci)
     
     if "disk" in video_option:
         assert video_dir is not None

@@ -3,8 +3,8 @@ import matplotlib.pyplot as plt
 import pathlib
 import numpy as np
 
-date = "24-02-18 15-24-41"
-#date = "24-02-20 18-05-03"
+date = "24-03-08 14-49-01"
+date = "24-03-09 01-05-42"
 #date = "24-02-21 23-05-39"
 #date = "24-02-24 06-09-40"
 mode = "train"

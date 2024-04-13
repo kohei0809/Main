@@ -190,8 +190,7 @@ class InfoRLEnv(RLEnv):
         return rate
 
     def get_reward(self, observations, **kwargs):
-        #reward = self._rl_config.SLACK_REWARD
-        reward = 0
+        reward = self._rl_config.SLACK_REWARD
         ci = -1000
         matrics = None
         
@@ -222,8 +221,9 @@ class InfoRLEnv(RLEnv):
         current_area *= 10
 
         if self._take_picture():
-            measure = self._env.get_metrics()[self._picture_measure_name]
-            ci, matrics = measure[0], measure[1]
+            #measure = self._env.get_metrics()[self._picture_measure_name]
+            #ci, matrics = measure[0], measure[1]
+            ci = 0.0
             
         # area_rewardを足す
         area_reward = current_area - self._previous_area
@@ -234,8 +234,8 @@ class InfoRLEnv(RLEnv):
         return [reward, ci, current_area, output], matrics     
     
     def get_reward2(self, observations, **kwargs):
-        #reward = self._rl_config.SLACK_REWARD
-        reward = 0
+        reward = self._rl_config.SLACK_REWARD
+        #reward = 0
         ci = -1000
         matrics = None
         
