@@ -4,7 +4,6 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torch_scatter
 
 
 def get_grid(pose, grid_size, device):
@@ -75,62 +74,6 @@ class ComputeSpatialLocs():
         y_gp = (-(Z / self.local_scale) + (self.egocentric_map_size-1)/2).round().long() # (bs, imh, imw, 1)
 
         return torch.cat([x_gp, y_gp], dim=1), valid_inputs
-
-
-class ProjectToGroundPlane():
-    def __init__(self, egocentric_map_size, device):
-        self.egocentric_map_size = egocentric_map_size
-        self.device = device
-
-    def forward(self, conv, spatial_locs, valid_inputs):
-        outh, outw = (self.egocentric_map_size, self.egocentric_map_size)
-        bs, f, HbyK, WbyK = conv.shape
-        eps=-1e16
-        K = 256 / 28     # Hardcoded value of K
-        # K = 1
-
-        # Sub-sample spatial_locs, valid_inputs according to img_feats resolution.
-        idxes_ss = ((torch.arange(0, HbyK, 1)*K).long().to(self.device), \
-                    (torch.arange(0, WbyK, 1)*K).long().to(self.device))
-
-        spatial_locs_ss = spatial_locs[:, :, idxes_ss[0][:, None], idxes_ss[1]] # (bs, 2, HbyK, WbyK)
-        valid_inputs_ss = valid_inputs[:, :, idxes_ss[0][:, None], idxes_ss[1]] # (bs, 1, HbyK, WbyK)
-        valid_inputs_ss = valid_inputs_ss.squeeze(1) # (bs, HbyK, WbyK)
-        invalid_inputs_ss = ~valid_inputs_ss
-
-        # Filter out invalid spatial locations
-        invalid_spatial_locs = (spatial_locs_ss[:, 1] >= outh) | (spatial_locs_ss[:, 1] < 0 ) | \
-                            (spatial_locs_ss[:, 0] >= outw) | (spatial_locs_ss[:, 0] < 0 ) # (bs, H, W)
-
-        invalid_writes = invalid_spatial_locs | invalid_inputs_ss
-
-        # Set the idxes for all invalid locations to (0, 0)
-        spatial_locs_ss[:, 0][invalid_writes] = 0
-        spatial_locs_ss[:, 1][invalid_writes] = 0
-
-        # Weird hack to account for max-pooling negative feature values
-        invalid_writes_f = rearrange(invalid_writes, 'b h w -> b () h w').float()
-        conv_masked = conv * (1 - invalid_writes_f) + eps * invalid_writes_f
-        conv_masked = rearrange(conv_masked, 'b e h w -> b e (h w)')
-
-        # Linearize ground-plane indices (linear idx = y * W + x)
-        linear_locs_ss = spatial_locs_ss[:, 1] * outw + spatial_locs_ss[:, 0] # (bs, H, W)
-        linear_locs_ss = rearrange(linear_locs_ss, 'b h w -> b () (h w)')
-        linear_locs_ss = linear_locs_ss.expand(-1, f, -1) # .contiguous()
-
-        proj_feats, _ = torch_scatter.scatter_max(
-                            conv_masked,
-                            linear_locs_ss,
-                            dim=2,
-                            dim_size=outh*outw,
-                        )
-        proj_feats = rearrange(proj_feats, 'b e (h w) -> b e h w', h=outh)
-
-        # Replace invalid features with zeros
-        eps_mask = (proj_feats == eps).float()
-        proj_feats = proj_feats * (1 - eps_mask) + eps_mask * (proj_feats - eps)
-
-        return proj_feats
 
 
 class RotateTensor:

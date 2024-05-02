@@ -21,9 +21,9 @@ import math
 import numpy as np
 import torch
 import torch.nn.functional as F
-import torch_scatter
 import tqdm
 from torch.optim.lr_scheduler import LambdaLR
+import clip
 
 from sentence_transformers import SentenceTransformer, util
 from lavis.models import load_model_and_preprocess
@@ -43,8 +43,8 @@ from habitat_baselines.common.utils import (
     linear_decay,
 )
 from habitat_baselines.rl.ppo import PPOOracle, BaselinePolicyOracle, ProposedPolicyOracle
-from utils.log_manager import LogManager
-from utils.log_writer import LogWriter
+from log_manager import LogManager
+from log_writer import LogWriter
 from habitat.utils.visualizations import fog_of_war, maps
 
 
@@ -53,66 +53,6 @@ def to_grid(coordinate_min, coordinate_max, global_map_size, position):
     grid_x = ((coordinate_max - position[0]) / grid_size).round()
     grid_y = ((position[1] - coordinate_min) / grid_size).round()
     return int(grid_x), int(grid_y)
-
-
-def draw_projection(image, depth, s, global_map_size, coordinate_min, coordinate_max):
-    image = torch.tensor(image).permute(2, 0, 1).unsqueeze(0)
-    depth = torch.tensor(depth).permute(2, 0, 1).unsqueeze(0)
-    spatial_locs, valid_inputs = _compute_spatial_locs(depth, s, global_map_size, coordinate_min, coordinate_max)
-    x_gp1 = _project_to_ground_plane(image, spatial_locs, valid_inputs, s)
-    
-    return x_gp1
-
-
-def _project_to_ground_plane(img_feats, spatial_locs, valid_inputs, s):
-    outh, outw = (s, s)
-    bs, f, HbyK, WbyK = img_feats.shape
-    device = img_feats.device
-    eps=-1e16
-    K = 1
-
-    # Sub-sample spatial_locs, valid_inputs according to img_feats resolution.
-    idxes_ss = ((torch.arange(0, HbyK, 1)*K).long().to(device), \
-                (torch.arange(0, WbyK, 1)*K).long().to(device))
-
-    spatial_locs_ss = spatial_locs[:, :, idxes_ss[0][:, None], idxes_ss[1]] # (bs, 2, HbyK, WbyK)
-    valid_inputs_ss = valid_inputs[:, :, idxes_ss[0][:, None], idxes_ss[1]] # (bs, 1, HbyK, WbyK)
-    valid_inputs_ss = valid_inputs_ss.squeeze(1) # (bs, HbyK, WbyK)
-    invalid_inputs_ss = ~valid_inputs_ss
-
-    # Filter out invalid spatial locations
-    invalid_spatial_locs = (spatial_locs_ss[:, 1] >= outh) | (spatial_locs_ss[:, 1] < 0 ) | \
-                        (spatial_locs_ss[:, 0] >= outw) | (spatial_locs_ss[:, 0] < 0 ) # (bs, H, W)
-
-    invalid_writes = invalid_spatial_locs | invalid_inputs_ss
-
-    # Set the idxes for all invalid locations to (0, 0)
-    spatial_locs_ss[:, 0][invalid_writes] = 0
-    spatial_locs_ss[:, 1][invalid_writes] = 0
-
-    # Weird hack to account for max-pooling negative feature values
-    invalid_writes_f = rearrange(invalid_writes, 'b h w -> b () h w').float()
-    img_feats_masked = img_feats * (1 - invalid_writes_f) + eps * invalid_writes_f
-    img_feats_masked = rearrange(img_feats_masked, 'b e h w -> b e (h w)')
-
-    # Linearize ground-plane indices (linear idx = y * W + x)
-    linear_locs_ss = spatial_locs_ss[:, 1] * outw + spatial_locs_ss[:, 0] # (bs, H, W)
-    linear_locs_ss = rearrange(linear_locs_ss, 'b h w -> b () (h w)')
-    linear_locs_ss = linear_locs_ss.expand(-1, f, -1) # .contiguous()
-
-    proj_feats, _ = torch_scatter.scatter_max(
-                        img_feats_masked,
-                        linear_locs_ss,
-                        dim=2,
-                        dim_size=outh*outw,
-                    )
-    proj_feats = rearrange(proj_feats, 'b e (h w) -> b e h w', h=outh)
-
-    # Replace invalid features with zeros
-    eps_mask = (proj_feats == eps).float()
-    proj_feats = proj_feats * (1 - eps_mask) + eps_mask * (proj_feats - eps)
-
-    return proj_feats
 
 
 def _compute_spatial_locs(depth_inputs, s, global_map_size, coordinate_min, coordinate_max):
@@ -179,7 +119,7 @@ class PPOTrainerO(BaseRLTrainerOracle):
         self._num_picture = config.TASK_CONFIG.TASK.PICTURE.NUM_PICTURE
         #撮った写真のRGB画像を保存
         #self._taken_picture = []
-        #撮った写真のciとrange_mapを保存
+        #撮った写真のsaliencyとrange_mapを保存
         self._taken_picture_list = []
         
         # 1回のCIを保存
@@ -265,7 +205,7 @@ class PPOTrainerO(BaseRLTrainerOracle):
         """
         return torch.load(checkpoint_path, *args, **kwargs)
 
-    METRICS_BLACKLIST = {"top_down_map", "collisions.is_collision", "traj_metrics", "ci"}
+    METRICS_BLACKLIST = {"top_down_map", "collisions.is_collision", "traj_metrics", "saliency"}
 
     @classmethod
     def _extract_scalars_from_info(
@@ -275,11 +215,6 @@ class PPOTrainerO(BaseRLTrainerOracle):
         for k, v in info.items():
             if k in cls.METRICS_BLACKLIST:
                 continue
-
-            """
-            if k == "ci":
-                result[k] = float(v[0])
-            """
                 
             if isinstance(v, dict):
                 result.update(
@@ -322,7 +257,7 @@ class PPOTrainerO(BaseRLTrainerOracle):
         description = ""
         
         for i in range(len(picture_list)):
-            description += (picture_list[i][2] + ". ")
+            description += (picture_list[i][3] + ". ")
             
         return description
     
@@ -331,6 +266,13 @@ class PPOTrainerO(BaseRLTrainerOracle):
         embedding = self.bert_model.encode(caption, convert_to_tensor=True)
         return embedding
     
+    def _create_new_image_embedding(self, obs):
+        image = Image.fromarray(obs)
+        image = self.preprocess(image)
+        image = torch.tensor(image).to(self.device).unsqueeze(0)
+        embetting = self.clip_model.encode_image(image).float()
+        return embetting
+
     def calculate_similarity(self, pred_description, origin_description):
         # 文をSentence Embeddingに変換
         embedding1 = self.bert_model.encode(pred_description, convert_to_tensor=True)
@@ -343,28 +285,49 @@ class PPOTrainerO(BaseRLTrainerOracle):
     
     def _cal_remove_index(self, picture_list, new_emmbedding):
         # 削除する写真を決める
-        # 他のdescriptionとの類似度を計算し、合計が最大のものを削除
+        # 他のsyasinnとの類似度を計算し、合計が最大のものを削除
         
-        sim_list = [[-10 for _ in range(self._num_picture+1)] for _ in range(self._num_picture+1)]
-        sim_list[self._num_picture][self._num_picture] = 0.0
-        for i in range(self._num_picture):
-            emd = picture_list[i][1]
-            sim_list[i][self._num_picture] = util.pytorch_cos_sim(emd, new_emmbedding).item()
-            sim_list[self._num_picture][i] = sim_list[i][self._num_picture]
-            for j in range(i, self._num_picture):
+        sim_list = [[-10 for _ in range(len(picture_list)+1)] for _ in range(len(picture_list)+1)]
+        sim_list[len(picture_list)][len(picture_list)] = 0.0
+        for i in range(len(picture_list)):
+            emd = picture_list[i][2]
+            sim_list[i][len(picture_list)] = util.pytorch_cos_sim(emd, new_emmbedding).item()
+            sim_list[len(picture_list)][i] = sim_list[i][len(picture_list)]
+            for j in range(i, len(picture_list)):
                 if i == j:
                     sim_list[i][j] = 0.0
                     continue
                     
-                sim_list[i][j] = util.pytorch_cos_sim(emd, picture_list[j][1]).item()
+                #logger.info(f"len: {len(picture_list)}, i: {i}, j: {j}")
+                sim_list[i][j] = util.pytorch_cos_sim(emd, picture_list[j][2]).item()
                 sim_list[j][i] = sim_list[i][j]
                 
         total_sim = [sum(similarity_list) for similarity_list in sim_list]
         remove_index = total_sim.index(max(total_sim))
         return remove_index
+
+    def _calculate_pic_sim(self, picture_list):
+        if len(picture_list) <= 1:
+            return 0.0
+            
+        sim_list = [[-10 for _ in range(len(picture_list))] for _ in range(len(picture_list))]
+
+        for i in range(len(picture_list)):
+            emd = picture_list[i][2]
+            for j in range(i, len(picture_list)):
+                if i == j:
+                    sim_list[i][j] = 0.0
+                    continue
+                    
+                sim_list[i][j] = util.pytorch_cos_sim(emd, picture_list[j][2]).item()
+                sim_list[j][i] = sim_list[i][j]
+                
+        total_sim = np.sum(sim_list)
+        total_sim /= (len(picture_list)*(len(picture_list)-1))
+        return total_sim
                 
     def _collect_rollout_step(
-        self, rollouts, current_episode_reward, current_episode_exp_area, current_episode_ci, current_episode_similarity, current_episode_each_sim, running_episode_stats
+        self, rollouts, current_episode_reward, current_episode_exp_area, current_episode_similarity, current_episode_picsim, current_episode_each_sim, current_episode_sum_saliency, running_episode_stats
     ):
         pth_time = 0.0
         env_time = 0.0
@@ -401,41 +364,150 @@ class PPOTrainerO(BaseRLTrainerOracle):
         batch = batch_obs(observations, device=self.device)
         
         reward = []
-        ci = []
+        saliency = []
         similarity = []
+        pic_sim = []
         exp_area = [] # 探索済みのエリア()
         exp_area_pre = []
-        #fog_of_war_map = []
-        #top_down_map = [] 
+        fog_of_war_map = []
+        top_down_map = [] 
         each_sim = []
+        sum_saliency = []
         n_envs = self.envs.num_envs
         for i in range(n_envs):
-            reward.append(rewards[i][0][0])
-            ci.append(rewards[i][0][1])
+            reward.append(rewards[i][0])
+            saliency.append(rewards[i][1])
             similarity.append(0)
-            exp_area.append(rewards[i][0][2]-rewards[i][0][3])
-            exp_area_pre.append(rewards[i][0][3])
-            #fog_of_war_map.append(infos[i]["picture_range_map"]["fog_of_war_mask"])
-            #top_down_map.append(infos[i]["picture_range_map"]["map"])
+            pic_sim.append(0)
+            exp_area.append(rewards[i][2]-rewards[i][3])
+            exp_area_pre.append(rewards[i][3])
+            fog_of_war_map.append(infos[i]["picture_range_map"]["fog_of_war_mask"])
+            top_down_map.append(infos[i]["picture_range_map"]["map"])
             each_sim.append(0)
+            sum_saliency.append(0)
             
         current_episodes = self.envs.current_episodes()
         for n in range(len(observations)):
             #TAKE_PICTUREが呼び出されたかを検証
-            if ci[n] != -1000:
-                picture_list = self._taken_picture_list[n]
-                
-                description = self.description_df[self.description_df["scene_id"]==current_episodes[n].scene_id[-15:-4]]["description"].item()
-                pred_description = self.create_description(picture_list)
-                pre_sim = self.calculate_similarity(pred_description, description)
+            if saliency[n] == -1:
+                continue
 
-                caption = self._create_caption(observations[n]["rgb"])
-                new_emmbedding = self._create_new_description_embedding(caption)
+            # 2回連続でTAKE_PICTUREをした場合は保存しない
+            if rollouts.prev_actions[rollouts.step][n] == actions[n]:
+                continue
+
+            # 今回撮ったpicture(p_n)が保存してあるpicture(p_k)とかぶっているkを保存
+            cover_list = [] 
+            cover_per_list = []
+            picture_range_map = self._create_picture_range_map(top_down_map[n], fog_of_war_map[n])
             
-                if len(picture_list) < self._num_picture:
-                    picture_list.append([ci[n], new_emmbedding, caption])
-                    #self._taken_picture[n].append(observations[n]["rgb"])
+            picture_list = self._taken_picture_list[n]
+                
+            description = self.description_df[self.description_df["scene_id"]==current_episodes[n].scene_id[-15:-4]]["description"].item()
+            pred_description = self.create_description(picture_list)
+            pre_sim = self.calculate_similarity(pred_description, description)
+
+            caption = self._create_caption(observations[n]["rgb"])
+            #new_emmbedding = self._create_new_description_embedding(caption)
+            new_emmbedding = self._create_new_image_embedding(observations[n]["rgb"])
+
+            # p_kのそれぞれのpicture_range_mapのリスト
+            pre_fog_of_war_map = [sublist[1] for sublist in picture_list]
+
+            # それぞれと閾値より被っているか計算
+            idx = -1
+            min_sal = saliency[n]
+
+            for k in range(len(pre_fog_of_war_map)):
+                # 閾値よりも被っていたらcover_listにkを追加
+                check, per = self._check_percentage_of_fog(picture_range_map, pre_fog_of_war_map[k], threshold=0.1)
+                cover_per_list.append(per)
+                #logger.info(f"{current_episodes[i].episode_id}, STEPS: {steps}, PERCENTAGE: {per}")
+                if check == True:
+                    cover_list.append(k)
+
+                #saliencyの最小値の写真を探索(１つも被っていない時用)
+                if (idx == -1) and (min_sal == picture_list[idx][0]):
+                    idx = -2
+                elif min_sal > picture_list[idx][0]:
+                    idx = k
+                    min_sal = picture_list[idx][0]
+
+            # 今までの写真と多くは被っていない時
+            if len(cover_list) == 0:
+                #範囲が多く被っていなくて、self._num_picture回未満写真を撮っていたらそのまま保存
+                if len(picture_list) != self._num_picture:
+                    picture_list.append([saliency[n], picture_range_map, new_emmbedding, caption])
+                    #picture_list.append(observations[n]["rgb"])
                     self._taken_picture_list[n] = picture_list
+
+                    # 説明文を生成し、similarityの差を計算する
+                    pred_description = self.create_description(picture_list)
+                    after_sim = self.calculate_similarity(pred_description, description)
+                    each_sim[n] = (after_sim - pre_sim)*10
+                    reward[n] += each_sim[n]
+                    continue
+
+                #範囲が多く被っていなくて、self._num_picture回以上写真を撮っていたら
+                else:
+                    # 今回の写真が保存している写真でsaliencyが最小のものと同じだった場合、写真の類似度が最大のものと交換
+                    if idx == -2:
+                        remove_index = self._cal_remove_index(picture_list, new_emmbedding)
+                        # 入れ替えしない場合
+                        if remove_index == len(picture_list):
+                            continue
+                        picture_list[remove_index] = [saliency[n], picture_range_map, new_emmbedding, caption]
+                        self._taken_picture_list[n] = picture_list
+                        #picture_list[idx] = observations[n]["rgb"]
+
+                        # 説明文を生成し、similarityの差を計算する
+                        pred_description = self.create_description(picture_list)
+                        after_sim = self.calculate_similarity(pred_description, description)
+                        each_sim[n] = (after_sim - pre_sim)*10
+                        reward[n] += each_sim[n]
+                        continue
+
+                    # 今回の写真が保存してある写真の１つでもSaliencyが高かったらSaliencyが最小の保存写真と入れ替え
+                    elif idx != -1:
+                        sal_pre = picture_list[idx][0]
+                        picture_list[idx] = [saliency[n], picture_range_map, new_emmbedding, caption]
+                        self._taken_picture_list[n] = picture_list
+                        #picture_list[idx] = observations[n]["rgb"]
+
+                        # 説明文を生成し、similarityの差を計算する
+                        pred_description = self.create_description(picture_list)
+                        after_sim = self.calculate_similarity(pred_description, description)
+                        each_sim[n] = (after_sim - pre_sim)*10
+                        reward[n] += each_sim[n]
+                        continue
+
+            # 1つとでも多く被った場合
+            else:
+                min_idx = -1
+                #min_sal_k = 1000
+                max_sal_k = 0.0
+                idx_sal = -1
+                # 多く被った写真のうち、saliencyが最小のものを計算
+                # 多く被った写真のうち、被っている割合が多い写真とsaiencyを比較
+                for k in range(len(cover_list)):
+                    idx_k = cover_list[k]
+                    """
+                    if picture_list[idx_k][0] < min_sal_k:
+                        min_sal_k = picture_list[idx_k][0]
+                        min_idx = idx_k
+                    """
+                    if max_sal_k < cover_per_list[idx_k]:
+                        max_sal_k = cover_per_list[idx_k]
+                        min_idx = idx_k
+                        idx_sal = picture_list[idx_k][0]
+                
+                # 被った割合分小さくなったCIでも保存写真の中の最小のCIより大きかったら交換
+                #if self._compareWithChangedSal(picture_range_map, pre_fog_of_war_map, cover_list, saliency[n], min_sal_k, min_idx) == True:
+                res = self._compareWithChangedSal(picture_range_map, pre_fog_of_war_map, cover_list, saliency[n], idx_sal, min_idx)
+                if res == 0:
+                    picture_list[min_idx] = [saliency[n], picture_range_map, new_emmbedding, caption]
+                    self._taken_picture_list[n] = picture_list
+                    #self._taken_picture[n][min_idx] = observations[n]["rgb"]   
                     
                     # 説明文を生成し、similarityの差を計算する
                     pred_description = self.create_description(picture_list)
@@ -443,42 +515,28 @@ class PPOTrainerO(BaseRLTrainerOracle):
                     each_sim[n] = (after_sim - pre_sim)*10
                     reward[n] += each_sim[n]
                     continue
-                
-                remove_index = self._cal_remove_index(picture_list, new_emmbedding)
-                # ランダムに写真を入れ替え
-                #remove_index = random.randrange(self._num_picture+1)
+                # 被った割合分小さくなったCIと保存写真の中の最小のCIが等しかったら写真の類似度が最大のものを削除
+                if res == 1:
+                    remove_index = self._cal_remove_index(picture_list, new_emmbedding)
+                    # 入れ替えしない場合
+                    if remove_index == len(picture_list):
+                        continue
+                    picture_list[remove_index] = [saliency[n], picture_range_map, new_emmbedding, caption]
+                    self._taken_picture_list[n] = picture_list
+                    #picture_list[idx] = observations[n]["rgb"]
 
-                # 入れ替えしない場合
-                if remove_index == self._num_picture:
+                    # 説明文を生成し、similarityの差を計算する
+                    pred_description = self.create_description(picture_list)
+                    after_sim = self.calculate_similarity(pred_description, description)
+                    each_sim[n] = (after_sim - pre_sim)*10
+                    reward[n] += each_sim[n]
                     continue
-                
-                # 入れ替えする場合
-                picture_list[remove_index] = [ci[n], new_emmbedding, caption]
-                self._taken_picture_list[n] = picture_list
-                #self._taken_picture[n][remove_index] = observations[n]["rgb"]
-                
-                # 説明文を生成し、similarityの差を計算する
-                pred_description = self.create_description(picture_list)
-                after_sim = self.calculate_similarity(pred_description, description)
-                each_sim[n] = (after_sim - pre_sim)*10
-                reward[n] += each_sim[n]
             
-        reward = torch.tensor(
-            reward, dtype=torch.float, device=current_episode_reward.device
-        ).unsqueeze(1)
-        exp_area = torch.tensor(
-           exp_area, dtype=torch.float, device=current_episode_reward.device
-        ).unsqueeze(1)
-        ci = torch.tensor(
-           ci, dtype=torch.float, device=current_episode_reward.device
-        ).unsqueeze(1)
-        similarity = torch.tensor(
-           similarity, dtype=torch.float, device=current_episode_reward.device
-        ).unsqueeze(1)
-        each_sim = torch.tensor(
-           each_sim, dtype=torch.float, device=current_episode_reward.device
-        ).unsqueeze(1)
-        
+        reward = torch.tensor(reward, dtype=torch.float, device=current_episode_reward.device).unsqueeze(1)
+        exp_area = torch.tensor(exp_area, dtype=torch.float, device=current_episode_reward.device).unsqueeze(1)
+        similarity = torch.tensor(similarity, dtype=torch.float, device=current_episode_reward.device).unsqueeze(1)
+        pic_sim = torch.tensor(pic_sim, dtype=torch.float, device=current_episode_reward.device).unsqueeze(1)
+        each_sim = torch.tensor(each_sim, dtype=torch.float, device=current_episode_reward.device).unsqueeze(1)       
 
         masks = torch.tensor(
             [[0.0] if done else [1.0] for done in dones],
@@ -487,13 +545,20 @@ class PPOTrainerO(BaseRLTrainerOracle):
         )
         
         # episode ended
-        for n in range(len(observations)):
-            if masks[n].item() == 0.0:
-                description = self.description_df[self.description_df["scene_id"]==current_episodes[n].scene_id[-15:-4]]["description"].item()
-                pred_description = self.create_description(self._taken_picture_list[n])
-                similarity[n] = self.calculate_similarity(pred_description, description)
-                #reward[n] += (similarity[n] * 10)
-                
+        for i in range(len(observations)):
+            if masks[i].item() == 0.0:
+                description = self.description_df[self.description_df["scene_id"]==current_episodes[i].scene_id[-15:-4]]["description"].item()
+                pred_description = self.create_description(self._taken_picture_list[i])
+                similarity[i] = self.calculate_similarity(pred_description, description)
+                pic_sim[i] = self._calculate_pic_sim(self._taken_picture_list[i])
+                #reward[i] += (similarity[i] * 10)
+
+                for j in range(len(self._taken_picture_list[i])):
+                    sum_saliency[i] += self._taken_picture_list[i][j][0]
+                sum_saliency[i] /= len(self._taken_picture_list[i])
+                sum_saliency = torch.tensor(sum_saliency, dtype=torch.float, device=current_episode_reward.device).unsqueeze(1)
+                current_episode_sum_saliency[i] += sum_saliency[i][0].item()
+
                 #self._taken_picture[n] = []
                 self._taken_picture_list[n] = []
                 #self._target_index_list[n] = [maps.MAP_TARGET_POINT_INDICATOR, maps.MAP_TARGET_POINT_INDICATOR+1, maps.MAP_TARGET_POINT_INDICATOR+2]
@@ -503,12 +568,13 @@ class PPOTrainerO(BaseRLTrainerOracle):
         running_episode_stats["reward"] += (1 - masks) * current_episode_reward
         current_episode_exp_area += exp_area
         running_episode_stats["exp_area"] += (1 - masks) * current_episode_exp_area
-        current_episode_ci += ci
-        running_episode_stats["ci"] += (1 - masks) * current_episode_ci
         current_episode_similarity += similarity
         running_episode_stats["similarity"] += (1 - masks) * current_episode_similarity
+        current_episode_picsim += pic_sim
+        running_episode_stats["pic_sim"] += (1 - masks) * current_episode_picsim
         current_episode_each_sim += each_sim
         running_episode_stats["each_sim"] += (1 - masks) * current_episode_each_sim
+        running_episode_stats["sum_saliency"] += (1 - masks) * current_episode_sum_saliency
         running_episode_stats["count"] += 1 - masks
 
         for k, v in self._extract_scalars_from_infos(infos).items():
@@ -522,12 +588,12 @@ class PPOTrainerO(BaseRLTrainerOracle):
 
             running_episode_stats[k] += (1 - masks) * v
 
-    
         current_episode_reward *= masks
         current_episode_exp_area *= masks
-        current_episode_ci *= masks
         current_episode_similarity *= masks
+        current_episode_picsim *= masks
         current_episode_each_sim *= masks
+        current_episode_sum_saliency *= masks
     
         if self._static_encoder:
             with torch.no_grad():
@@ -593,7 +659,7 @@ class PPOTrainerO(BaseRLTrainerOracle):
         learning_rate_logger = self.log_manager.createLogWriter("learning_rate")
         #time, found, forward, left, right, look_up, look_down
         action_logger = self.log_manager.createLogWriter("action_prob")
-        #time, picture, ci, episode_length
+        #time, picture, episode_length
         metrics_logger = self.log_manager.createLogWriter("metrics")
         #time, losses_value, losses_policy
         loss_logger = self.log_manager.createLogWriter("loss")
@@ -624,6 +690,9 @@ class PPOTrainerO(BaseRLTrainerOracle):
         self.lavis_model, self.vis_processors, _ = load_model_and_preprocess(name="blip_caption", model_type="base_coco", is_eval=True, device=self.device)
         self.bert_model.to(self.device)
         self.lavis_model.to(self.device)
+
+        # Load the clip model
+        self.clip_model, self.preprocess = clip.load('ViT-B/32', self.device)
         
         
         # ファイルを読み込んで行ごとにリストに格納する
@@ -639,14 +708,19 @@ class PPOTrainerO(BaseRLTrainerOracle):
 
         self.description_df = pd.DataFrame({'scene_id': scene_ids, 'description': descriptions})
             
-        if not os.path.isdir(self.config.CHECKPOINT_FOLDER):
-            os.makedirs(self.config.CHECKPOINT_FOLDER)
+        os.makedirs(self.config.CHECKPOINT_FOLDER, exist_ok=True)
         self._setup_actor_critic_agent(ppo_cfg)
         logger.info(
             "agent number of parameters: {}".format(
                 sum(param.numel() for param in self.agent.parameters())
             )
         )
+
+        ################
+        checkpoint_path = "/gs/fs/tga-aklab/matsumoto/Main/cpt/24-04-25 00-34-27/ckpt.208.pth"
+        ckpt_dict = self.load_checkpoint(checkpoint_path, map_location="cpu")
+        self.agent.load_state_dict(ckpt_dict["state_dict"])
+        #############
 
         rollouts = RolloutStorageOracle(
             ppo_cfg.num_steps,
@@ -671,16 +745,18 @@ class PPOTrainerO(BaseRLTrainerOracle):
 
         current_episode_reward = torch.zeros(self.envs.num_envs, 1, device=self.device)
         current_episode_exp_area = torch.zeros(self.envs.num_envs, 1, device=self.device)
-        current_episode_ci = torch.zeros(self.envs.num_envs, 1, device=self.device)
         current_episode_similarity = torch.zeros(self.envs.num_envs, 1, device=self.device)
+        current_episode_picsim = torch.zeros(self.envs.num_envs, 1, device=self.device)
         current_episode_each_sim = torch.zeros(self.envs.num_envs, 1, device=self.device)
+        current_episode_sum_saliency = torch.zeros(self.envs.num_envs, 1, device=self.device)
         running_episode_stats = dict(
             count=torch.zeros(self.envs.num_envs, 1, device=current_episode_reward.device),
             reward=torch.zeros(self.envs.num_envs, 1, device=current_episode_reward.device),
             exp_area=torch.zeros(self.envs.num_envs, 1, device=current_episode_reward.device),
-            ci=torch.zeros(self.envs.num_envs, 1, device=current_episode_reward.device),
             similarity=torch.zeros(self.envs.num_envs, 1, device=current_episode_reward.device),
+            pic_sim=torch.zeros(self.envs.num_envs, 1, device=current_episode_reward.device),
             each_sim=torch.zeros(self.envs.num_envs, 1, device=current_episode_reward.device),
+            sum_saliency=torch.zeros(self.envs.num_envs, 1, device=current_episode_reward.device),
         )
         window_episode_stats = defaultdict(
             lambda: deque(maxlen=ppo_cfg.reward_window_size)
@@ -709,8 +785,7 @@ class PPOTrainerO(BaseRLTrainerOracle):
                 )
 
             for step in range(ppo_cfg.num_steps):
-                if (step + update*ppo_cfg.num_steps) % 500 == 0:
-                    print("STEP: " + str(step + update*ppo_cfg.num_steps))
+                #logger.info(f"STEP: {step}")
                     
                 # 毎ステップ初期化する
                 """
@@ -723,7 +798,7 @@ class PPOTrainerO(BaseRLTrainerOracle):
                     delta_env_time,
                     delta_steps,
                 ) = self._collect_rollout_step(
-                    rollouts, current_episode_reward, current_episode_exp_area, current_episode_ci, current_episode_similarity, current_episode_each_sim, running_episode_stats
+                    rollouts, current_episode_reward, current_episode_exp_area, current_episode_similarity, current_episode_picsim, current_episode_each_sim, current_episode_sum_saliency, running_episode_stats
                 )
                 pth_time += delta_pth_time
                 env_time += delta_env_time
@@ -781,10 +856,10 @@ class PPOTrainerO(BaseRLTrainerOracle):
 
             if len(metrics) > 0:
                 logger.info("COUNT: " + str(deltas["count"]))
-                logger.info("CI:" + str(metrics["ci"]))
                 logger.info("Similarity: " + str(metrics["similarity"]))
+                logger.info("Pic_Sim: " + str(metrics["pic_sim"]))
                 logger.info("REWARD: " + str(deltas["reward"] / deltas["count"]))
-                metrics_logger.writeLine(str(count_steps) + "," +str(metrics["ci"]) + "," + str(metrics["exp_area"]) + "," + str(metrics["similarity"]) + "," + str(metrics["each_sim"]) + "," + str(metrics["raw_metrics.agent_path_length"]))
+                metrics_logger.writeLine(str(count_steps) + "," + str(metrics["exp_area"]) + "," + str(metrics["similarity"]) + "," + str(metrics["pic_sim"]) + "," + str(metrics["each_sim"]) + "," + str(metrics["sum_saliency"]) + "," + str(metrics["raw_metrics.agent_path_length"]))
                     
                 logger.info(metrics)
             
@@ -852,7 +927,7 @@ class PPOTrainerO(BaseRLTrainerOracle):
         y_pre = len(pre_fog_map)
         x_pre = len(pre_fog_map[0])
         
-        
+        per = -1.0
         if (x==x_pre) and (y==y_pre):
             for i in range(y):
                 for j in range(x):
@@ -869,17 +944,18 @@ class PPOTrainerO(BaseRLTrainerOracle):
                 per = num_covered / num
             
             if per < threshold:
-                return False
+                return False, per
             else:
-                return True
+                return True, per
         else:
-            False
+            #logger.info("CHECK, false")
+            return False, per
         
     # fog_mapがidx以外のpre_fog_mapと被っている割合を算出
     def _cal_rate_of_fog_other(self, fog_map, pre_fog_of_war_map_list, cover_list, idx):
         y = len(fog_map)
         x = len(fog_map[0])
-        
+
         num = 0.0 #fog_mapのMAP_VALID_POINTの数
         num_covered = 0.0 #pre_fog_mapのどれかと被っているグリッド数
         
@@ -899,8 +975,7 @@ class PPOTrainerO(BaseRLTrainerOracle):
                         # fogとpre_fogがかぶっている時
                         if pre_map[i][j] == 1:
                             num_covered += 1
-                            break
-                        
+                            break               
         if num == 0:
             rate = 0.0
         else:
@@ -909,13 +984,16 @@ class PPOTrainerO(BaseRLTrainerOracle):
         return rate
     
     
-    def _compareWithChangedCI(self, picture_range_map, pre_fog_of_war_map_list, cover_list, ci, pre_ci, idx):
+    def _compareWithChangedSal(self, picture_range_map, pre_fog_of_war_map_list, cover_list, saliency, pre_saliency, idx):
         rate = self._cal_rate_of_fog_other(picture_range_map, pre_fog_of_war_map_list, cover_list, idx)
-        ci = ci * (1-rate) # k以外と被っている割合分小さくする
-        if ci > pre_ci:
-            return True
+        saliency = saliency * (1-rate) # k以外と被っている割合分小さくする
+        #logger.info(f"LIST_SIZE: {len(cover_list)}, RATE: {rate}, saliency: {saliency}, pre_saliency: {pre_saliency}")
+        if saliency > pre_saliency:
+            return 0
+        elif saliency == pre_saliency:
+            return 1
         else:
-            return False
+            return 2
         
     # 写真を撮った範囲のピクセルを計算
     def _cal_picture_range(self, top_down_map, fog_of_war_map):
@@ -937,13 +1015,12 @@ class PPOTrainerO(BaseRLTrainerOracle):
         date: str,
         checkpoint_index: int = 0,
     ) -> None:
-        
-        isRGB = True
+        logger.info("############### EAVL ##################")
         self.log_manager = log_manager
         #ログ出力設定
         #time, reward
         eval_reward_logger = self.log_manager.createLogWriter("reward")
-        #time, ci, exp_area, simlarity, each_sim, path_length
+        #time, exp_area, simlarity, each_sim, path_length
         eval_metrics_logger = self.log_manager.createLogWriter("metrics")
         #フォルダがない場合は、作成
         
@@ -986,6 +1063,9 @@ class PPOTrainerO(BaseRLTrainerOracle):
         self.lavis_model, self.vis_processors, _ = load_model_and_preprocess(name="blip_caption", model_type="base_coco", is_eval=True, device=self.device)
         self.bert_model.to(self.device)
         self.lavis_model.to(self.device)
+
+        # Load the clip model
+        self.clip_model, self.preprocess = clip.load('ViT-B/32', self.device)
         
         # ファイルを読み込んで行ごとにリストに格納する
         with open('data/scene_datasets/mp3d/description.txt', 'r') as file:
@@ -1009,9 +1089,10 @@ class PPOTrainerO(BaseRLTrainerOracle):
 
         current_episode_reward = torch.zeros(self.envs.num_envs, 1, device=self.device)
         current_episode_exp_area = torch.zeros(self.envs.num_envs, 1, device=self.device)
-        current_episode_ci = torch.zeros(self.envs.num_envs, 1, device=self.device)
         current_episode_similarity = torch.zeros(self.envs.num_envs, 1, device=self.device)
+        current_episode_picsim = torch.zeros(self.envs.num_envs, 1, device=self.device)
         current_episode_each_sim = torch.zeros(self.envs.num_envs, 1, device=self.device)
+        current_episode_sum_saliency = torch.zeros(self.envs.num_envs, 1, device=self.device)
         
         test_recurrent_hidden_states = torch.zeros(
             self.actor_critic.net.num_recurrent_layers,
@@ -1027,9 +1108,6 @@ class PPOTrainerO(BaseRLTrainerOracle):
         rgb_frames = [
             [] for _ in range(self.config.NUM_PROCESSES)
         ]  # type: List[List[np.ndarray]]
-        rgb_obs = [
-            [] for _ in range(self.config.NUM_PROCESSES)
-        ] 
         if len(self.config.VIDEO_OPTION) > 0:
             os.makedirs(self.config.VIDEO_DIR+"/"+date, exist_ok=True)
 
@@ -1055,6 +1133,10 @@ class PPOTrainerO(BaseRLTrainerOracle):
                     deterministic=False,
                 )
 
+                pre_ac = torch.zeros(prev_actions.shape[0], 1, device=self.device, dtype=torch.long)
+                for i in range(prev_actions.shape[0]):
+                    pre_ac[i] = prev_actions[i]
+
                 prev_actions.copy_(actions)
 
             outputs = self.envs.step([a[0].item() for a in actions])
@@ -1071,33 +1153,34 @@ class PPOTrainerO(BaseRLTrainerOracle):
             )
             
             reward = []
-            ci = []
+            saliency = []
             similarity = []
+            pic_sim = []
             exp_area = [] # 探索済みのエリア()
             exp_area_pre = []
             fog_of_war_map = []
             top_down_map = [] 
             top_map = []
             each_sim = []
+            sum_saliency = []
             n_envs = self.envs.num_envs
             for i in range(n_envs):
-                reward.append(rewards[i][0][0])
-                ci.append(rewards[i][0][1])
+                reward.append(rewards[i][0])
+                saliency.append(rewards[i][1])
                 similarity.append(0)
-                exp_area.append(rewards[i][0][2]-rewards[i][0][3])
-                exp_area_pre.append(rewards[i][0][3])
+                pic_sim.append(0)
+                exp_area.append(rewards[i][2]-rewards[i][3])
+                exp_area_pre.append(rewards[i][3])
                 fog_of_war_map.append(infos[i]["picture_range_map"]["fog_of_war_mask"])
                 top_down_map.append(infos[i]["picture_range_map"]["map"])
                 top_map.append(infos[i]["top_down_map"]["map"])
                 each_sim.append(0)
-            
-            for n in range(len(observations)):
+                sum_saliency.append(0)
+
+            for n in range(n_envs):
+                """
                 #TAKE_PICTUREが呼び出されたかを検証
-                if ci[n] != -1000:
-                    picture_pixel = self._cal_picture_range(top_down_map[n], fog_of_war_map[n])
-                    if picture_pixel <= 10:
-                        continue
-                    
+                if saliency[n] != -1:
                     picture_list = self._taken_picture_list[n]
                     
                     description = self.description_df[self.description_df["scene_id"]==current_episodes[n].scene_id[-15:-4]]["description"].item()
@@ -1105,10 +1188,15 @@ class PPOTrainerO(BaseRLTrainerOracle):
                     pre_sim = self.calculate_similarity(pred_description, description)
 
                     caption = self._create_caption(observations[n]["rgb"])
-                    new_emmbedding = self._create_new_description_embedding(caption)
-                
+                    #new_emmbedding = self._create_new_description_embedding(caption)
+                    new_emmbedding = self._create_new_image_embedding(observations[n]["rgb"])
+
+                    picture_range_map = self._create_picture_range_map(top_down_map[n], fog_of_war_map[n])
+                    
+                    # self._num_picture回未満写真を撮っていたらそのまま保存
                     if len(picture_list) < self._num_picture:
-                        picture_list.append([ci[n], new_emmbedding, caption])
+                        picture_list.append([saliency[n], picture_range_map, new_emmbedding, caption])
+                        [saliency[n], picture_range_map, new_emmbedding, caption]
                         self._taken_picture[n].append(observations[n]["rgb"])
                         self._taken_picture_list[n] = picture_list
                         
@@ -1118,36 +1206,171 @@ class PPOTrainerO(BaseRLTrainerOracle):
                         each_sim[n] = (after_sim - pre_sim)*10
                         reward[n] += each_sim[n]
                         continue
-                    
-                    #remove_index = self._cal_remove_index(picture_list, new_emmbedding)
-                    
+                
                     # ランダムに写真を入れ替え
-                    remove_index = random.randrange(self._num_picture+1)
+                    idx = random.randrange(self._num_picture+1)
                     
-                    # 入れ替えしない場合
-                    if remove_index == self._num_picture:
+                    # 入れ替えなし
+                    if idx == self._num_picture:
                         continue
                     
-                    # 入れ替えする場合
-                    picture_list[remove_index] = [ci[n], new_emmbedding, caption]
+                    # idxと入れ替える
+                    picture_list[idx] = [saliency[n], picture_range_map, new_emmbedding, caption]
                     self._taken_picture_list[n] = picture_list
-                    self._taken_picture[n][remove_index] = observations[n]["rgb"]
-                    
+                    self._taken_picture[n][idx] = observations[n]["rgb"]
+                
                     # 説明文を生成し、similarityの差を計算する
                     pred_description = self.create_description(picture_list)
                     after_sim = self.calculate_similarity(pred_description, description)
                     each_sim[n] = (after_sim - pre_sim)*10
                     reward[n] += each_sim[n]
+                """
+                #TAKE_PICTUREが呼び出されたかを検証
+                if saliency[n] == -1:
+                    continue
+
+                # 2回連続でTAKE_PICTUREをした場合は保存しない
+                if pre_ac[n].item() == actions[n].item():
+                    continue
+
+                # 今回撮ったpicture(p_n)が保存してあるpicture(p_k)とかぶっているkを保存
+                cover_list = [] 
+                cover_per_list = []
+                picture_range_map = self._create_picture_range_map(top_down_map[n], fog_of_war_map[n])
+                
+                picture_list = self._taken_picture_list[n]
+                    
+                description = self.description_df[self.description_df["scene_id"]==current_episodes[n].scene_id[-15:-4]]["description"].item()
+                pred_description = self.create_description(picture_list)
+                pre_sim = self.calculate_similarity(pred_description, description)
+
+                caption = self._create_caption(observations[n]["rgb"])
+                #new_emmbedding = self._create_new_description_embedding(caption)
+                new_emmbedding = self._create_new_image_embedding(observations[n]["rgb"])
+
+                # p_kのそれぞれのpicture_range_mapのリスト
+                pre_fog_of_war_map = [sublist[1] for sublist in picture_list]
+
+                # それぞれと閾値より被っているか計算
+                idx = -1
+                min_sal = saliency[n]
+
+                for k in range(len(pre_fog_of_war_map)):
+                    # 閾値よりも被っていたらcover_listにkを追加
+                    check, per = self._check_percentage_of_fog(picture_range_map, pre_fog_of_war_map[k], threshold=0.1)
+                    cover_per_list.append(per)
+                    if check == True:
+                        cover_list.append(k)
+
+                    #saliencyの最小値の写真を探索(１つも被っていない時用)
+                    if (idx == -1) and (min_sal == picture_list[idx][0]):
+                        idx = -2
+                    elif min_sal > picture_list[idx][0]:
+                        idx = k
+                        min_sal = picture_list[idx][0]
+
+                # 今までの写真と多くは被っていない時
+                if len(cover_list) == 0:
+                    #範囲が多く被っていなくて、self._num_picture回未満写真を撮っていたらそのまま保存
+                    if len(picture_list) != self._num_picture:
+                        picture_list.append([saliency[n], picture_range_map, new_emmbedding, caption])
+                        self._taken_picture[n].append(observations[n]["rgb"])
+                        self._taken_picture_list[n] = picture_list
+
+                        # 説明文を生成し、similarityの差を計算する
+                        pred_description = self.create_description(picture_list)
+                        after_sim = self.calculate_similarity(pred_description, description)
+                        each_sim[n] = (after_sim - pre_sim)*10
+                        reward[n] += each_sim[n]
+                        continue
+
+                    #範囲が多く被っていなくて、self._num_picture回以上写真を撮っていたら
+                    else:
+                        # 今回の写真が保存している写真でsaliencyが最小のものと同じだった場合、写真の類似度が最大のものと交換
+                        if idx == -2:
+                            remove_index = self._cal_remove_index(picture_list, new_emmbedding)
+                            # 入れ替えしない場合
+                            if remove_index == len(picture_list):
+                                continue
+                            picture_list[remove_index] = [saliency[n], picture_range_map, new_emmbedding, caption]
+                            self._taken_picture_list[n] = picture_list
+                            self._taken_picture[n][remove_index] = observations[n]["rgb"]
+
+                            # 説明文を生成し、similarityの差を計算する
+                            pred_description = self.create_description(picture_list)
+                            after_sim = self.calculate_similarity(pred_description, description)
+                            each_sim[n] = (after_sim - pre_sim)*10
+                            reward[n] += each_sim[n]
+                            continue
+
+                        # 今回の写真が保存してある写真の１つでもSaliencyが高かったらSaliencyが最小の保存写真と入れ替え
+                        elif idx != -1:
+                            sal_pre = picture_list[idx][0]
+                            picture_list[idx] = [saliency[n], picture_range_map, new_emmbedding, caption]
+                            self._taken_picture_list[n] = picture_list
+                            self._taken_picture[n][idx] = observations[n]["rgb"]
+
+                            # 説明文を生成し、similarityの差を計算する
+                            pred_description = self.create_description(picture_list)
+                            after_sim = self.calculate_similarity(pred_description, description)
+                            each_sim[n] = (after_sim - pre_sim)*10
+                            reward[n] += each_sim[n]
+                            continue
+
+                # 1つとでも多く被った場合
+                else:
+                    min_idx = -1
+                    #min_sal_k = 1000
+                    max_sal_k = 0.0
+                    idx_sal = -1
+                    # 多く被った写真のうち、saliencyが最小のものを計算
+                    # 多く被った写真のうち、被っている割合が多い写真とsaliencyを比較
+                    for k in range(len(cover_list)):
+                        idx_k = cover_list[k]
+                        if max_sal_k < cover_per_list[idx_k]:
+                            max_sal_k = cover_per_list[idx_k]
+                            min_idx = idx_k
+                            idx_sal = picture_list[idx_k][0]
+
+                    
+                    # 被った割合分小さくなったCIでも保存写真の中の最小のCIより大きかったら交換
+                    #if self._compareWithChangedSal(picture_range_map, pre_fog_of_war_map, cover_list, saliency[n], min_sal_k, min_idx) == True:
+                    res = self._compareWithChangedSal(picture_range_map, pre_fog_of_war_map, cover_list, saliency[n], idx_sal, min_idx)
+                    if res == 0:
+                        picture_list[min_idx] = [saliency[n], picture_range_map, new_emmbedding, caption]
+                        self._taken_picture_list[n] = picture_list
+                        self._taken_picture[n][min_idx] = observations[n]["rgb"]   
+                        
+                        # 説明文を生成し、similarityの差を計算する
+                        pred_description = self.create_description(picture_list)
+                        after_sim = self.calculate_similarity(pred_description, description)
+                        each_sim[n] = (after_sim - pre_sim)*10
+                        reward[n] += each_sim[n]
+                        continue
+                    # 被った割合分小さくなったCIと保存写真の中の最小のCIが等しかったら写真の類似度が最大のものを削除
+                    if res == 1:
+                        remove_index = self._cal_remove_index(picture_list, new_emmbedding)
+                        # 入れ替えしない場合
+                        if remove_index == len(picture_list):
+                            continue
+                        picture_list[remove_index] = [saliency[n], picture_range_map, new_emmbedding, caption]
+                        self._taken_picture_list[n] = picture_list
+                        self._taken_picture[n][remove_index] = observations[n]["rgb"]
+
+                        # 説明文を生成し、similarityの差を計算する
+                        pred_description = self.create_description(picture_list)
+                        after_sim = self.calculate_similarity(pred_description, description)
+                        each_sim[n] = (after_sim - pre_sim)*10
+                        reward[n] += each_sim[n]
+                        continue
                 
             reward = torch.tensor(reward, dtype=torch.float, device=self.device).unsqueeze(1)
             exp_area = torch.tensor(exp_area, dtype=torch.float, device=self.device).unsqueeze(1)
-            ci= torch.tensor(ci, dtype=torch.float, device=self.device).unsqueeze(1)
-            similarity = torch.tensor(similarity, dtype=torch.float, device=current_episode_reward.device).unsqueeze(1)
-            each_sim = torch.tensor(each_sim, dtype=torch.float, device=current_episode_reward.device).unsqueeze(1)
-
+            similarity = torch.tensor(similarity, dtype=torch.float, device=self.device).unsqueeze(1)
+            each_sim = torch.tensor(each_sim, dtype=torch.float, device=self.device).unsqueeze(1)
+            
             current_episode_reward += reward
             current_episode_exp_area += exp_area
-            current_episode_ci += ci
             current_episode_each_sim += each_sim
             next_episodes = self.envs.current_episodes()
             envs_to_pause = []
@@ -1165,6 +1388,14 @@ class PPOTrainerO(BaseRLTrainerOracle):
                     pred_description = self.create_description(self._taken_picture_list[i])
                     similarity[i] = self.calculate_similarity(pred_description, description)
                     current_episode_similarity[i] += similarity[i]
+                    pic_sim[i] = self._calculate_pic_sim(self._taken_picture_list[i])
+                    current_episode_picsim[i] += pic_sim[i]
+
+                    for j in range(len(self._taken_picture_list[i])):
+                        sum_saliency[i] += self._taken_picture_list[i][j][0]
+                    sum_saliency[i] /= len(self._taken_picture_list[i])
+                    sum_saliency = torch.tensor(sum_saliency, dtype=torch.float, device=current_episode_reward.device).unsqueeze(1)
+                    current_episode_sum_saliency[i] += sum_saliency[i][0].item()
                     
                     # save description
                     out_path = os.path.join("log/" + date + "/eval/description.txt")
@@ -1179,18 +1410,20 @@ class PPOTrainerO(BaseRLTrainerOracle):
                     episode_stats = dict()
                     episode_stats["reward"] = current_episode_reward[i].item()
                     episode_stats["exp_area"] = current_episode_exp_area[i].item()
-                    episode_stats["ci"] = current_episode_ci[i].item()
                     episode_stats["similarity"] = current_episode_similarity[i].item()
+                    episode_stats["pic_sim"] = current_episode_picsim[i].item()
                     episode_stats["each_sim"] = current_episode_each_sim[i].item()
+                    episode_stats["sum_saliency"] = current_episode_sum_saliency[i].item()
                     
                     episode_stats.update(
                         self._extract_scalars_from_info(infos[i])
                     )
                     current_episode_reward[i] = 0
                     current_episode_exp_area[i] = 0
-                    current_episode_ci[i] = 0
                     current_episode_similarity[i] = 0
+                    current_episode_picsim[i] = 0
                     current_episode_each_sim[i] = 0
+                    current_episode_sum_saliency[i] = 0
                     # use scene_id + episode_id as unique id for storing stats
                     stats_episodes[
                         (
@@ -1212,9 +1445,9 @@ class PPOTrainerO(BaseRLTrainerOracle):
                         for j in range(50):
                            rgb_frames[i].append(picture) 
                         metrics=self._extract_scalars_from_info(infos[i])
-                        name_ci = similarity[i].item()
+                        name_sim = similarity[i].item()
                         
-                        name_ci = str(name_ci)[:4] + "-" + str(episode_stats["exp_area"])[:4] + "-" + str(len(stats_episodes))
+                        name_sim = str(len(stats_episodes)) + "-" + str(name_sim)[:4] + "-" + str(episode_stats["exp_area"])[:4]
                         generate_video(
                             video_option=self.config.VIDEO_OPTION,
                             video_dir=self.config.VIDEO_DIR+"/"+date,
@@ -1222,46 +1455,30 @@ class PPOTrainerO(BaseRLTrainerOracle):
                             episode_id=current_episodes[i].episode_id,
                             checkpoint_idx=checkpoint_index,
                             metrics=metrics,
-                            name_ci=name_ci,
+                            name_ci=name_sim,
                         )
         
                         # Save taken picture                        
-                        for j in range(len(self._taken_picture_list[i])):
-                            picture_name = "episode=" + str(current_episodes[i].episode_id) + "-" + str(len(stats_episodes)) + "-" + str(j)
+                        for j in range(len(self._taken_picture[i])):
+                            picture_name = f"episode={current_episodes[i].episode_id}-{len(stats_episodes)}-{j}"
                             dir_name = "./taken_picture/" + date 
-                            if not os.path.exists(dir_name):
-                                os.makedirs(dir_name)
+                            os.makedirs(dir_name, exist_ok=True)
                         
                             picture = Image.fromarray(np.uint8(self._taken_picture[i][j]))
                             file_path = dir_name + "/" + picture_name + ".png"
                             picture.save(file_path)
-                            
-                            
+
+                            # Save picture range map
                             """
-                            picture = self._taken_picture[i][j]
-                            plt.figure()
-                            ax = plt.subplot(1, 1, 1)
-                            ax.axis("off")
-                            plt.imshow(picture)
-                            plt.subplots_adjust(left=0.1, right=0.95, bottom=0.05, top=0.95)
-                            path = dir_name + "/" + picture_name + ".png"
-                        
-                            plt.savefig(path)  
+                            eval_range_logger = self.log_manager.createLogWriter(f"range_{current_episodes[i].episode_id}_{len(stats_episodes)}_{j}")
+                            range_map = self._taken_picture_list[i][j][1]
+                            for k in range(range_map.shape[0]):
+                                for l in range(range_map.shape[1]):
+                                    eval_range_logger.write(str(range_map[k][l]))
+                                eval_range_logger.writeLine()
                             """
-                            
-                        ######## 探索の写真を保存する #######
-                        for j in range(len(rgb_obs[i])):
-                            picture_name = str(j)
-                            dir_name = "./taken_picture_all/" + date + "/" +  str(current_episodes[i].episode_id) + "-" + str(len(stats_episodes))
-                            if not os.path.exists(dir_name):
-                                os.makedirs(dir_name)
-                        
-                            picture = Image.fromarray(np.uint8(rgb_obs[i][j]))
-                            file_path = dir_name + "/" + picture_name + ".jpg"
-                            picture.save(file_path)
                             
                         rgb_frames[i] = []
-                        rgb_obs[i] = []
                         
                     self._taken_picture[i] = []
                     self._taken_picture_list[i] = []
@@ -1270,10 +1487,6 @@ class PPOTrainerO(BaseRLTrainerOracle):
                 elif len(self.config.VIDEO_OPTION) > 0:
                     frame = observations_to_image(observations[i], infos[i], actions[i].cpu().numpy())
                     rgb_frames[i].append(frame)
-                    
-                    ####### 探索の写真を一通り保存する ########
-                    if isRGB and ci[i] == -1000:
-                        rgb_obs[i].append(observations[i]["rgb"])
 
             (
                 self.envs,
@@ -1281,13 +1494,13 @@ class PPOTrainerO(BaseRLTrainerOracle):
                 not_done_masks,
                 current_episode_reward,
                 current_episode_exp_area,
-                current_episode_ci,
                 current_episode_similarity,
+                current_episode_picsim,
                 current_episode_each_sim,
+                current_episode_sum_saliency,
                 prev_actions,
                 batch,
                 rgb_frames,
-                rgb_obs
             ) = self._pause_envs(
                 envs_to_pause,
                 self.envs,
@@ -1295,13 +1508,13 @@ class PPOTrainerO(BaseRLTrainerOracle):
                 not_done_masks,
                 current_episode_reward,
                 current_episode_exp_area,
-                current_episode_ci,
                 current_episode_similarity,
+                current_episode_picsim,
                 current_episode_each_sim,
+                current_episode_sum_saliency,
                 prev_actions,
                 batch,
                 rgb_frames,
-                rgb_obs
             )
 
         num_episodes = len(stats_episodes)
@@ -1325,9 +1538,10 @@ class PPOTrainerO(BaseRLTrainerOracle):
 
         metrics = {k: v for k, v in aggregated_stats.items() if k != "reward"}
 
-        logger.info("CI:" + str(metrics["ci"]))
         logger.info("Similarity: " + str(metrics["similarity"]))
-        eval_metrics_logger.writeLine(str(step_id) + "," + str(metrics["ci"]) + "," + str(metrics["exp_area"]) + "," + str(metrics["similarity"]) + "," + str(metrics["each_sim"]) + "," + str(metrics["raw_metrics.agent_path_length"]))
+        logger.info("Pic_Sim: " + str(metrics["pic_sim"]))
+        logger.info("Sum Saliency: " + str(metrics["sum_saliency"]))
+        eval_metrics_logger.writeLine(str(step_id)+","+str(metrics["exp_area"])+","+str(metrics["similarity"])+","+str(metrics["pic_sim"])+","+str(metrics["each_sim"])+","+str(metrics["sum_saliency"])+","+str(metrics["raw_metrics.agent_path_length"]))
 
         self.envs.close()
         
@@ -1338,7 +1552,7 @@ class PPOTrainerO(BaseRLTrainerOracle):
         #ログ出力設定
         #time, reward
         eval_reward_logger = self.log_manager.createLogWriter("reward")
-        #time, ci, exp_area, distance. path_length
+        #time, exp_area, distance. path_length
         eval_metrics_logger = self.log_manager.createLogWriter("metrics")
 
         self.device = (
@@ -1377,6 +1591,9 @@ class PPOTrainerO(BaseRLTrainerOracle):
         self.lavis_model, self.vis_processors, _ = load_model_and_preprocess(name="blip_caption", model_type="base_coco", is_eval=True, device=self.device)
         self.bert_model.to(self.device)
         self.lavis_model.to(self.device)
+
+        # Load the clip model
+        self.clip_model, self.preprocess = clip.load('ViT-B/32', self.device)
         
         # ファイルを読み込んで行ごとにリストに格納する
         with open('data/scene_datasets/mp3d/description.txt', 'r') as file:
@@ -1400,9 +1617,10 @@ class PPOTrainerO(BaseRLTrainerOracle):
 
         current_episode_reward = torch.zeros(self.envs.num_envs, 1, device=self.device)
         current_episode_exp_area = torch.zeros(self.envs.num_envs, 1, device=self.device)
-        current_episode_ci = torch.zeros(self.envs.num_envs, 1, device=self.device)
         current_episode_similarity = torch.zeros(self.envs.num_envs, 1, device=self.device)
+        current_episode_picsim = torch.zeros(self.envs.num_envs, 1, device=self.device)
         current_episode_each_sim = torch.zeros(self.envs.num_envs, 1, device=self.device)
+        current_episode_sum_saliency = torch.zeros(self.envs.num_envs, 1, device=self.device)
         
         test_recurrent_hidden_states = torch.zeros(
             self.actor_critic.net.num_recurrent_layers,
@@ -1449,27 +1667,31 @@ class PPOTrainerO(BaseRLTrainerOracle):
             )
             
             reward = []
-            ci = []
+            saliency = []
             similarity = []
+            pic_sim = []
             exp_area = [] # 探索済みのエリア()
             exp_area_pre = []
             fog_of_war_map = []
             top_down_map = [] 
             each_sim = []
+            sum_saliency = []
             n_envs = self.envs.num_envs
             for i in range(n_envs):
-                reward.append(rewards[i][0][0])
-                ci.append(rewards[i][0][1])
+                reward.append(rewards[i][0])
+                saliency.append(rewards[i][1])
                 similarity.append(0)
-                exp_area.append(rewards[i][0][2]-rewards[i][0][3])
-                exp_area_pre.append(rewards[i][0][3])
+                pic_sim.append(0)
+                exp_area.append(rewards[i][2]-rewards[i][3])
+                exp_area_pre.append(rewards[i][3])
                 fog_of_war_map.append(infos[i]["picture_range_map"]["fog_of_war_mask"])
                 top_down_map.append(infos[i]["picture_range_map"]["map"])
                 each_sim.append(0)
+                sum_saliency.append(0)
                 
             for n in range(len(observations)):
                 #TAKE_PICTUREが呼び出されたかを検証
-                if ci[n] != -1000:
+                if saliency[n] != -1:
                     picture_list = self._taken_picture_list[n]
                     
                     description = self.description_df[self.description_df["scene_id"]==current_episodes[n].scene_id[-15:-4]]["description"].item()
@@ -1477,11 +1699,15 @@ class PPOTrainerO(BaseRLTrainerOracle):
                     pre_sim = self.calculate_similarity(pred_description, description)
 
                     caption = self._create_caption(observations[n]["rgb"])
-                    new_emmbedding = self._create_new_description_embedding(caption)
+                    #new_emmbedding = self._create_new_description_embedding(caption)
+                    new_emmbedding = self._create_new_image_embedding(observations[n]["rgb"])
+
+                    picture_range_map = self._create_picture_range_map(top_down_map[n], fog_of_war_map[n])
                     
                     # self._num_picture回未満写真を撮っていたらそのまま保存
                     if len(picture_list) < self._num_picture:
-                        picture_list.append([ci[n], new_emmbedding, caption])
+                        picture_list.append([saliency[n], picture_range_map, new_emmbedding, caption])
+                        [saliency[n], picture_range_map, new_emmbedding, caption]
                         self._taken_picture[n].append(observations[n]["rgb"])
                         self._taken_picture_list[n] = picture_list
                         
@@ -1500,7 +1726,7 @@ class PPOTrainerO(BaseRLTrainerOracle):
                         continue
                     
                     # idxと入れ替える
-                    picture_list[idx] = [ci[n], new_emmbedding, caption]
+                    picture_list[idx] = [saliency[n], picture_range_map, new_emmbedding, caption]
                     self._taken_picture_list[n] = picture_list
                     self._taken_picture[n][idx] = observations[n]["rgb"]
                 
@@ -1512,13 +1738,11 @@ class PPOTrainerO(BaseRLTrainerOracle):
                     
             reward = torch.tensor(reward, dtype=torch.float, device=self.device).unsqueeze(1)
             exp_area = torch.tensor(exp_area, dtype=torch.float, device=self.device).unsqueeze(1)
-            ci = torch.tensor(ci, dtype=torch.float, device=self.device).unsqueeze(1)
             similarity = torch.tensor(similarity, dtype=torch.float, device=current_episode_reward.device).unsqueeze(1)
             each_sim = torch.tensor(each_sim, dtype=torch.float, device=current_episode_reward.device).unsqueeze(1)
 
             current_episode_reward += reward
             current_episode_exp_area += exp_area
-            current_episode_ci += ci
             current_episode_each_sim += each_sim
             next_episodes = self.envs.current_episodes()
             envs_to_pause = []
@@ -1537,7 +1761,15 @@ class PPOTrainerO(BaseRLTrainerOracle):
                     similarity[i] = self.calculate_similarity(pred_description, description)
                     #reward[i] += (similarity[i] * 10)
                     current_episode_similarity[i] += similarity[i]
-                    
+                    pic_sim[i] = self._calculate_pic_sim(self._taken_picture_list[i])
+                    current_episode_picsim[i] += pic_sim[i]
+
+                    for j in range(len(self._taken_picture_list[i])):
+                        sum_saliency[i] += self._taken_picture_list[i][j][0]
+                    sum_saliency[i] /= len(self._taken_picture_list[i])
+                    sum_saliency = torch.tensor(sum_saliency, dtype=torch.float, device=current_episode_reward.device).unsqueeze(1)
+                    current_episode_sum_saliency[i] += sum_saliency[i][0].item()
+
                     # save description
                     out_path = os.path.join("log/" + date + "/random/description.txt")
                     with open(out_path, 'a') as f:
@@ -1551,17 +1783,18 @@ class PPOTrainerO(BaseRLTrainerOracle):
                     episode_stats = dict()
                     episode_stats["reward"] = current_episode_reward[i].item()
                     episode_stats["exp_area"] = current_episode_exp_area[i].item()
-                    episode_stats["ci"] = current_episode_ci[i].item()
                     episode_stats["similarity"] = current_episode_similarity[i].item()
+                    episode_stats["pic_sim"] = current_episode_picsim[i].item()
                     episode_stats["each_sim"] = current_episode_each_sim[i].item()
+                    episode_stats["sum_saliency"] = current_episode_sum_saliency[i].item()
                     
                     episode_stats.update(
                         self._extract_scalars_from_info(infos[i])
                     )
                     current_episode_reward[i] = 0
                     current_episode_exp_area[i] = 0
-                    current_episode_ci[i] = 0
                     current_episode_similarity[i] = 0
+                    current_episode_picsim[i] = 0
                     current_episode_each_sim[i] = 0
                     # use scene_id + episode_id as unique id for storing stats
                     stats_episodes[
@@ -1585,9 +1818,9 @@ class PPOTrainerO(BaseRLTrainerOracle):
                         for j in range(50):
                            rgb_frames[i].append(picture) 
                         metrics=self._extract_scalars_from_info(infos[i])
-                        name_ci = similarity[i].item()
+                        name_sim = similarity[i].item()
                         
-                        name_ci = str(name_ci)[:4] + "-" + str(episode_stats["exp_area"])[:4] + "-" + str(len(stats_episodes))
+                        name_sim = str(name_sim)[:4] + "-" + str(episode_stats["exp_area"])[:4] + "-" + str(len(stats_episodes))
                         generate_video(
                             video_option=self.config.VIDEO_OPTION,
                             video_dir=self.config.VIDEO_DIR+"/"+date,
@@ -1595,25 +1828,18 @@ class PPOTrainerO(BaseRLTrainerOracle):
                             episode_id=current_episodes[i].episode_id,
                             checkpoint_idx=-1,
                             metrics=metrics,
-                            name_ci=name_ci,
+                            name_ci=name_sim,
                         )
         
                         # Save taken picture                        
                         for j in range(len(self._taken_picture_list[i])):                                
                             picture_name = "episode=" + str(current_episodes[i].episode_id) + "-" + str(len(stats_episodes)) + "-" + str(j)
                             dir_name = "./taken_picture/" + date 
-                            if not os.path.exists(dir_name):
-                                os.makedirs(dir_name)
+                            os.makedirs(dir_name, exist_ok=True)
                         
-                            picture = self._taken_picture[i][j]
-                            plt.figure()
-                            ax = plt.subplot(1, 1, 1)
-                            ax.axis("off")
-                            plt.imshow(picture)
-                            plt.subplots_adjust(left=0.1, right=0.95, bottom=0.05, top=0.95)
-                            path = dir_name + "/" + picture_name + ".png"
-                        
-                            plt.savefig(path)
+                            picture = Image.fromarray(np.uint8(self._taken_picture[i][j]))
+                            file_path = dir_name + "/" + picture_name + ".png"
+                            picture.save(file_path)
                             
                         rgb_frames[i] = []
                         
@@ -1631,9 +1857,10 @@ class PPOTrainerO(BaseRLTrainerOracle):
                 not_done_masks,
                 current_episode_reward,
                 current_episode_exp_area,
-                current_episode_ci,
                 current_episode_similarity,
+                current_episode_picsim,
                 current_episode_each_sim,
+                current_episode_sum_saliency,
                 prev_actions,
                 batch,
                 rgb_frames,
@@ -1644,9 +1871,10 @@ class PPOTrainerO(BaseRLTrainerOracle):
                 not_done_masks,
                 current_episode_reward,
                 current_episode_exp_area,
-                current_episode_ci,
                 current_episode_similarity,
+                current_episode_picsim,
                 current_episode_each_sim,
+                current_episode_sum_saliency,
                 prev_actions,
                 batch,
                 rgb_frames,
@@ -1670,9 +1898,10 @@ class PPOTrainerO(BaseRLTrainerOracle):
 
         metrics = {k: v for k, v in aggregated_stats.items() if k != "reward"}
 
-        logger.info("CI:" + str(metrics["ci"]))
         logger.info("Similarity: " + str(metrics["similarity"]))
-        eval_metrics_logger.writeLine(str(step_id) + "," + str(metrics["ci"]) + "," + str(metrics["exp_area"]) + "," + str(metrics["similarity"]) + "," + str(metrics["each_sim"]) + "," + str(metrics["raw_metrics.agent_path_length"]))
+        logger.info("Pic_Sim: " + str(metrics["pic_sim"]))
+        logger.info("Sum Saliency: " + str(metrics["sum_saliency"]))
+        eval_metrics_logger.writeLine(str(step_id) + "," + str(metrics["exp_area"]) + "," + str(metrics["similarity"]) + "," + str(metrics["pic_sim"]) + "," + str(metrics["each_sim"]) + "," + str(metrics["sum_saliency"]) + "," + str(metrics["raw_metrics.agent_path_length"]))
 
         self.envs.close()
         
@@ -1684,7 +1913,7 @@ class PPOTrainerO(BaseRLTrainerOracle):
         #ログ出力設定
         #time, reward
         eval_reward_logger = self.log_manager.createLogWriter("reward")
-        #time, ci, exp_area, distance. path_length
+        #time, exp_area, distance. path_length
         eval_metrics_logger = self.log_manager.createLogWriter("metrics")
 
         self.device = (
@@ -1746,9 +1975,10 @@ class PPOTrainerO(BaseRLTrainerOracle):
 
         current_episode_reward = torch.zeros(self.envs.num_envs, 1, device=self.device)
         current_episode_exp_area = torch.zeros(self.envs.num_envs, 1, device=self.device)
-        current_episode_ci = torch.zeros(self.envs.num_envs, 1, device=self.device)
         current_episode_similarity = torch.zeros(self.envs.num_envs, 1, device=self.device)
+        current_episode_picsim = torch.zeros(self.envs.num_envs, 1, device=self.device)
         current_episode_each_sim = torch.zeros(self.envs.num_envs, 1, device=self.device)
+        current_episode_sum_saliency = torch.zeros(self.envs.num_envs, 1, device=self.device)
         
         test_recurrent_hidden_states = torch.zeros(
             self.actor_critic.net.num_recurrent_layers,
@@ -1781,6 +2011,12 @@ class PPOTrainerO(BaseRLTrainerOracle):
                 
             actions = torch.tensor(actions, dtype=torch.long, device=self.device)
                 
+            pre_ac = torch.zeros(prev_actions.shape[0], 1, device=self.device, dtype=torch.long)
+            for i in range(prev_actions.shape[0]):
+                pre_ac[i] = prev_actions[i]
+
+            prev_actions.copy_(actions)
+
             outputs = self.envs.step([a[0].item() for a in actions])
  
             observations, rewards, dones, infos = [
@@ -1795,46 +2031,151 @@ class PPOTrainerO(BaseRLTrainerOracle):
             )
             
             reward = []
-            ci = []
+            saliency = []
             similarity = []
+            pic_sim = []
             exp_area = [] # 探索済みのエリア()
             exp_area_pre = []
             fog_of_war_map = []
             top_down_map = [] 
             top_map = []
             each_sim = []
+            sum_saliency = []
             n_envs = self.envs.num_envs
             for i in range(n_envs):
-                reward.append(rewards[i][0][0])
-                ci.append(rewards[i][0][1])
+                reward.append(rewards[i][0])
+                saliency.append(rewards[i][1])
                 similarity.append(0)
-                exp_area.append(rewards[i][0][2]-rewards[i][0][3])
-                exp_area_pre.append(rewards[i][0][3])
+                pic_sim.append(0)
+                exp_area.append(rewards[i][2]-rewards[i][3])
+                exp_area_pre.append(rewards[i][3])
                 fog_of_war_map.append(infos[i]["picture_range_map"]["fog_of_war_mask"])
                 top_down_map.append(infos[i]["picture_range_map"]["map"])
                 top_map.append(infos[i]["top_down_map"]["map"])
                 each_sim.append(0)
+                sum_saliency.append(0)
             
             for n in range(len(observations)):
                 #TAKE_PICTUREが呼び出されたかを検証
-                if ci[n] != -1000:
-                    picture_pixel = self._cal_picture_range(top_down_map[n], fog_of_war_map[n])
-                    if picture_pixel <= 10:
-                        continue
-                    
-                    picture_list = self._taken_picture_list[n]
-                    
-                    description = self.description_df[self.description_df["scene_id"]==current_episodes[n].scene_id[-15:-4]]["description"].item()
-                    pred_description = self.create_description(picture_list)
-                    pre_sim = self.calculate_similarity(pred_description, description)
+                if saliency[n] == -1:
+                    continue
 
-                    caption = self._create_caption(observations[n]["rgb"])
-                    new_emmbedding = self._create_new_description_embedding(caption)
+                # 2回連続でTAKE_PICTUREをした場合は保存しない
+                if pre_ac[n].item() == actions[n].item():
+                    continue
+
+                # 今回撮ったpicture(p_n)が保存してあるpicture(p_k)とかぶっているkを保存
+                cover_list = [] 
+                cover_per_list = []
+                picture_range_map = self._create_picture_range_map(top_down_map[n], fog_of_war_map[n])
                 
-                    if len(picture_list) < self._num_picture:
-                        picture_list.append([ci[n], new_emmbedding, caption])
+                picture_list = self._taken_picture_list[n]
+                    
+                description = self.description_df[self.description_df["scene_id"]==current_episodes[n].scene_id[-15:-4]]["description"].item()
+                pred_description = self.create_description(picture_list)
+                pre_sim = self.calculate_similarity(pred_description, description)
+
+                caption = self._create_caption(observations[n]["rgb"])
+                #new_emmbedding = self._create_new_description_embedding(caption)
+                new_emmbedding = self._create_new_image_embedding(observations[n]["rgb"])
+
+                # p_kのそれぞれのpicture_range_mapのリスト
+                pre_fog_of_war_map = [sublist[1] for sublist in picture_list]
+
+                # それぞれと閾値より被っているか計算
+                idx = -1
+                min_sal = saliency[n]
+
+                for k in range(len(pre_fog_of_war_map)):
+                    # 閾値よりも被っていたらcover_listにkを追加
+                    check, per = self._check_percentage_of_fog(picture_range_map, pre_fog_of_war_map[k], threshold=0.1)
+                    cover_per_list.append(per)
+                    if check == True:
+                        cover_list.append(k)
+
+                    #saliencyの最小値の写真を探索(１つも被っていない時用)
+                    if (idx == -1) and (min_sal == picture_list[idx][0]):
+                        idx = -2
+                    elif min_sal > picture_list[idx][0]:
+                        idx = k
+                        min_sal = picture_list[idx][0]
+
+                # 今までの写真と多くは被っていない時
+                if len(cover_list) == 0:
+                    #範囲が多く被っていなくて、self._num_picture回未満写真を撮っていたらそのまま保存
+                    if len(picture_list) != self._num_picture:
+                        picture_list.append([saliency[n], picture_range_map, new_emmbedding, caption, steps])
                         self._taken_picture[n].append(observations[n]["rgb"])
                         self._taken_picture_list[n] = picture_list
+
+                        # 説明文を生成し、similarityの差を計算する
+                        pred_description = self.create_description(picture_list)
+                        after_sim = self.calculate_similarity(pred_description, description)
+                        each_sim[n] = (after_sim - pre_sim)*10
+                        reward[n] += each_sim[n]
+                        continue
+
+                    #範囲が多く被っていなくて、self._num_picture回以上写真を撮っていたら
+                    else:
+                        # 今回の写真が保存している写真でsaliencyが最小のものと同じだった場合、写真の類似度が最大のものと交換
+                        if idx == -2:
+                            remove_index = self._cal_remove_index(picture_list, new_emmbedding)
+                            # 入れ替えしない場合
+                            if remove_index == len(picture_list):
+                                continue
+                            picture_list[remove_index] = [saliency[n], picture_range_map, new_emmbedding, caption]
+                            self._taken_picture_list[n] = picture_list
+                            self._taken_picture[n][remove_index] = observations[n]["rgb"]
+
+                            # 説明文を生成し、similarityの差を計算する
+                            pred_description = self.create_description(picture_list)
+                            after_sim = self.calculate_similarity(pred_description, description)
+                            each_sim[n] = (after_sim - pre_sim)*10
+                            reward[n] += each_sim[n]
+                            continue
+
+                        # 今回の写真が保存してある写真の１つでもSaliencyが高かったらSaliencyが最小の保存写真と入れ替え
+                        elif idx != -1:
+                            sal_pre = picture_list[idx][0]
+                            picture_list[idx] = [saliency[n], picture_range_map, new_emmbedding, caption]
+                            self._taken_picture_list[n] = picture_list
+                            self._taken_picture[n][idx] = observations[n]["rgb"]
+
+                            # 説明文を生成し、similarityの差を計算する
+                            pred_description = self.create_description(picture_list)
+                            after_sim = self.calculate_similarity(pred_description, description)
+                            each_sim[n] = (after_sim - pre_sim)*10
+                            reward[n] += each_sim[n]
+                            continue
+
+                # 1つとでも多く被った場合
+                else:
+                    min_idx = -1
+                    #min_sal_k = 1000
+                    max_sal_k = 0.0
+                    idx_sal = -1
+                    # 多く被った写真のうち、saliencyが最小のものを計算
+                    # 多く被った写真のうち、被っている割合が多い写真とsaliencyを比較
+                    for k in range(len(cover_list)):
+                        idx_k = cover_list[k]
+                        """
+                        if picture_list[idx_k][0] < min_sal_k:
+                            min_sal_k = picture_list[idx_k][0]
+                            min_idx = idx_k
+                        """
+                        if max_sal_k < cover_per_list[idx_k]:
+                            max_sal_k = cover_per_list[idx_k]
+                            min_idx = idx_k
+                            idx_sal = picture_list[idx_k][0]
+
+                    
+                    # 被った割合分小さくなったCIでも保存写真の中の最小のCIより大きかったら交換
+                    #if self._compareWithChangedSal(picture_range_map, pre_fog_of_war_map, cover_list, saliency[n], min_sal_k, min_idx) == True:
+                    res = self._compareWithChangedSal(picture_range_map, pre_fog_of_war_map, cover_list, saliency[n], idx_sal, min_idx)
+                    if res == 0:
+                        picture_list[min_idx] = [saliency[n], picture_range_map, new_emmbedding, caption]
+                        self._taken_picture_list[n] = picture_list
+                        self._taken_picture[n][min_idx] = observations[n]["rgb"]   
                         
                         # 説明文を生成し、similarityの差を計算する
                         pred_description = self.create_description(picture_list)
@@ -1842,33 +2183,30 @@ class PPOTrainerO(BaseRLTrainerOracle):
                         each_sim[n] = (after_sim - pre_sim)*10
                         reward[n] += each_sim[n]
                         continue
-                    
-                    remove_index = self._cal_remove_index(picture_list, new_emmbedding)
-                    
-                    # 入れ替えしない場合
-                    if remove_index == self._num_picture:
+                    # 被った割合分小さくなったCIと保存写真の中の最小のCIが等しかったら写真の類似度が最大のものを削除
+                    if res == 1:
+                        remove_index = self._cal_remove_index(picture_list, new_emmbedding)
+                        # 入れ替えしない場合
+                        if remove_index == len(picture_list):
+                            continue
+                        picture_list[remove_index] = [saliency[n], picture_range_map, new_emmbedding, caption]
+                        self._taken_picture_list[n] = picture_list
+                        self._taken_picture[n][remove_index] = observations[n]["rgb"]
+
+                        # 説明文を生成し、similarityの差を計算する
+                        pred_description = self.create_description(picture_list)
+                        after_sim = self.calculate_similarity(pred_description, description)
+                        each_sim[n] = (after_sim - pre_sim)*10
+                        reward[n] += each_sim[n]
                         continue
-                    
-                    # 入れ替えする場合
-                    picture_list[remove_index] = [ci[n], new_emmbedding, caption]
-                    self._taken_picture_list[n] = picture_list
-                    self._taken_picture[n][remove_index] = observations[n]["rgb"]
-                    
-                    # 説明文を生成し、similarityの差を計算する
-                    pred_description = self.create_description(picture_list)
-                    after_sim = self.calculate_similarity(pred_description, description)
-                    each_sim[n] = (after_sim - pre_sim)*10
-                    reward[n] += each_sim[n]
                 
             reward = torch.tensor(reward, dtype=torch.float, device=self.device).unsqueeze(1)
             exp_area = torch.tensor(exp_area, dtype=torch.float, device=self.device).unsqueeze(1)
-            ci= torch.tensor(ci, dtype=torch.float, device=self.device).unsqueeze(1)
             similarity = torch.tensor(similarity, dtype=torch.float, device=current_episode_reward.device).unsqueeze(1)
             each_sim = torch.tensor(each_sim, dtype=torch.float, device=current_episode_reward.device).unsqueeze(1)
 
             current_episode_reward += reward
             current_episode_exp_area += exp_area
-            current_episode_ci += ci
             current_episode_each_sim += each_sim
             next_episodes = self.envs.current_episodes()
             envs_to_pause = []
@@ -1886,9 +2224,17 @@ class PPOTrainerO(BaseRLTrainerOracle):
                     pred_description = self.create_description(self._taken_picture_list[i])
                     similarity[i] = self.calculate_similarity(pred_description, description)
                     current_episode_similarity[i] += similarity[i]
+                    pic_sim[i] = self._calculate_pic_sim(self._taken_picture_list[i])
+                    current_episode_picsim[i] += pic_sim[i]
                     
+                    for j in range(len(self._taken_picture_list[i])):
+                        sum_saliency[i] += self._taken_picture_list[i][j][0]
+                    sum_saliency[i] /= len(self._taken_picture_list[i])
+                    sum_saliency = torch.tensor(sum_saliency, dtype=torch.float, device=current_episode_reward.device).unsqueeze(1)
+                    current_episode_sum_saliency[i] += sum_saliency[i][0].item()
+
                     # save description
-                    out_path = os.path.join("log/" + date + "/random2/description.txt")
+                    out_path = os.path.join("log/" + date + "/eval/description.txt")
                     with open(out_path, 'a') as f:
                         # print関数でファイルに出力する
                         print(str(current_episodes[i].scene_id[-15:-4]) + "_" + str(current_episodes[i].episode_id), file=f)
@@ -1900,18 +2246,20 @@ class PPOTrainerO(BaseRLTrainerOracle):
                     episode_stats = dict()
                     episode_stats["reward"] = current_episode_reward[i].item()
                     episode_stats["exp_area"] = current_episode_exp_area[i].item()
-                    episode_stats["ci"] = current_episode_ci[i].item()
                     episode_stats["similarity"] = current_episode_similarity[i].item()
+                    episode_stats["pic_sim"] = current_episode_picsim[i].item()
                     episode_stats["each_sim"] = current_episode_each_sim[i].item()
+                    episode_stats["sum_saliency"] = current_episode_sum_saliency[i].item()
                     
                     episode_stats.update(
                         self._extract_scalars_from_info(infos[i])
                     )
                     current_episode_reward[i] = 0
                     current_episode_exp_area[i] = 0
-                    current_episode_ci[i] = 0
                     current_episode_similarity[i] = 0
+                    current_episode_picsim[i] = 0
                     current_episode_each_sim[i] = 0
+                    current_episode_sum_saliency[i] = 0
                     # use scene_id + episode_id as unique id for storing stats
                     stats_episodes[
                         (
@@ -1933,35 +2281,38 @@ class PPOTrainerO(BaseRLTrainerOracle):
                         for j in range(50):
                            rgb_frames[i].append(picture) 
                         metrics=self._extract_scalars_from_info(infos[i])
-                        name_ci = similarity[i].item()
+                        name_sim = similarity[i].item()
                         
-                        name_ci = str(name_ci)[:4] + "-" + str(episode_stats["exp_area"])[:4] + "-" + str(len(stats_episodes))
+                        name_sim = str(len(stats_episodes)) + "-" + str(name_sim)[:4] + "-" + str(episode_stats["exp_area"])[:4]
                         generate_video(
                             video_option=self.config.VIDEO_OPTION,
                             video_dir=self.config.VIDEO_DIR+"/"+date,
                             images=rgb_frames[i],
                             episode_id=current_episodes[i].episode_id,
-                            checkpoint_idx=-1,
+                            checkpoint_idx=checkpoint_index,
                             metrics=metrics,
-                            name_ci=name_ci,
+                            name_ci=name_sim,
                         )
         
-                        # Save taken picture                                                    
-                        for j in range(len(self._taken_picture_list[i])):
-                            picture_name = "episode=" + str(current_episodes[i].episode_id) + "-" + str(j)
+                        # Save taken picture                        
+                        for j in range(len(self._taken_picture[i])):
+                            picture_name = f"episode={current_episodes[i].episode_id}-{len(stats_episodes)}-{j}"
                             dir_name = "./taken_picture/" + date 
-                            if not os.path.exists(dir_name):
-                                os.makedirs(dir_name)
+                            os.makedirs(dir_name, exist_ok=True)
                         
-                            picture = self._taken_picture[i][j]
-                            plt.figure()
-                            ax = plt.subplot(1, 1, 1)
-                            ax.axis("off")
-                            plt.imshow(picture)
-                            plt.subplots_adjust(left=0.1, right=0.95, bottom=0.05, top=0.95)
-                            path = dir_name + "/" + picture_name + ".png"
-                        
-                            plt.savefig(path)    
+                            picture = Image.fromarray(np.uint8(self._taken_picture[i][j]))
+                            file_path = dir_name + "/" + picture_name + ".png"
+                            picture.save(file_path)
+
+                            # Save picture range map
+                            """
+                            eval_range_logger = self.log_manager.createLogWriter(f"range_{current_episodes[i].episode_id}_{len(stats_episodes)}_{j}")
+                            range_map = self._taken_picture_list[i][j][1]
+                            for k in range(range_map.shape[0]):
+                                for l in range(range_map.shape[1]):
+                                    eval_range_logger.write(str(range_map[k][l]))
+                                eval_range_logger.writeLine()
+                            """
                             
                         rgb_frames[i] = []
                         
@@ -1979,9 +2330,10 @@ class PPOTrainerO(BaseRLTrainerOracle):
                 not_done_masks,
                 current_episode_reward,
                 current_episode_exp_area,
-                current_episode_ci,
                 current_episode_similarity,
+                current_episode_picsim,
                 current_episode_each_sim,
+                current_episode_sum_saliency,
                 prev_actions,
                 batch,
                 rgb_frames,
@@ -1992,9 +2344,10 @@ class PPOTrainerO(BaseRLTrainerOracle):
                 not_done_masks,
                 current_episode_reward,
                 current_episode_exp_area,
-                current_episode_ci,
                 current_episode_similarity,
+                current_episode_picsim,
                 current_episode_each_sim,
+                current_episode_sum_saliency,
                 prev_actions,
                 batch,
                 rgb_frames,
@@ -2012,14 +2365,18 @@ class PPOTrainerO(BaseRLTrainerOracle):
         for k, v in aggregated_stats.items():
             logger.info(f"Average episode {k}: {v:.4f}")
         
-        step_id = -1
+
+        step_id = checkpoint_index
+        if "extra_state" in ckpt_dict and "step" in ckpt_dict["extra_state"]:
+            step_id = ckpt_dict["extra_state"]["step"]
         
         eval_reward_logger.writeLine(str(step_id) + "," + str(aggregated_stats["reward"]))
 
         metrics = {k: v for k, v in aggregated_stats.items() if k != "reward"}
 
-        logger.info("CI:" + str(metrics["ci"]))
         logger.info("Similarity: " + str(metrics["similarity"]))
-        eval_metrics_logger.writeLine(str(step_id) + "," + str(metrics["ci"]) + "," + str(metrics["exp_area"]) + "," + str(metrics["similarity"]) + "," + str(metrics["each_sim"]) + "," + str(metrics["raw_metrics.agent_path_length"]))
+        logger.info("Pic_Sim: " + str(metrics["pic_sim"]))
+        logger.info("Sum Saliency: " + str(metrics["sum_saliency"]))
+        eval_metrics_logger.writeLine(str(step_id)+","+str(metrics["exp_area"])+","+str(metrics["similarity"])+","+str(metrics["pic_sim"])+","+str(metrics["each_sim"])+","+str(metrics["sum_saliency"])+","+str(metrics["raw_metrics.agent_path_length"]))
 
         self.envs.close()

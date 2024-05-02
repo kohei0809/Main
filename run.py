@@ -1,11 +1,12 @@
-#!/usr/bin/env python3
 
 # Copyright (c) Facebook, Inc. and its affiliates.
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 import os
 import sys
-sys.path.insert(0, "")
+#sys.path.insert(0, "/gs/fs/tga-aklab/matsumoto/Main")
+#sys.path.append(".")
+#sys.path.insert(0, '../')
 import argparse
 import pathlib
 import random
@@ -14,7 +15,7 @@ import numpy as np
 import torch
 from habitat_baselines.common.baseline_registry import baseline_registry
 from habitat_baselines.config.default import get_config    
-from utils.log_manager import LogManager
+from log_manager import LogManager
 from habitat.core.logging import logger
 
 def main():
@@ -59,8 +60,8 @@ def test(run_type: str, opts=None):
     
     if run_type is None:
         run_type = "train"
-        run_type = "eval"
-        run_type = "random"
+        #run_type = "eval"
+        #run_type = "random"
         #run_type = "random2"
         
     logger.info("RUN TYPE: " + run_type)
@@ -71,17 +72,21 @@ def test(run_type: str, opts=None):
     if run_type in ["train", "train2"]:
         datadate = "" 
         config.defrost()
-        config.NUM_PROCESSES = 40
+        config.NUM_PROCESSES = 4
         config.RL.PPO.num_mini_batch = 4
         config.freeze()
     elif run_type in ["eval", "eval2", "eval3"]:
         datadate = "24-03-08 14-49-01"
         #datadate = "24-03-09 01-05-42"
         #datadate = "24-03-13 01-04-07"
-        #datadate = "24-03-16 20-40-27"
+        datadate = "24-04-26 00-36-56"
+        #datadate = "test"
 
         config.defrost()
-        config.NUM_PROCESSES = 60
+        config.RL.PPO.num_mini_batch = 4
+        config.NUM_PROCESSES = 24
+        #config.RL.PPO.num_mini_batch = 1
+        #config.NUM_PROCESSES = 1
         config.TEST_EPISODE_COUNT = 1100
         #config.VIDEO_OPTION = []
         config.VIDEO_OPTION = ["disk"]
@@ -90,7 +95,7 @@ def test(run_type: str, opts=None):
         datadate = "" 
         config.defrost()
         config.TASK_CONFIG.DATASET.SPLIT = "val"
-        config.NUM_PROCESSES = 60
+        config.NUM_PROCESSES = 24
         config.TEST_EPISODE_COUNT = 1100
         #config.VIDEO_OPTION = []
         config.VIDEO_OPTION = ["disk"]
@@ -115,6 +120,7 @@ def test(run_type: str, opts=None):
             trainer_init = baseline_registry.get_trainer("oracle3")
         else:
             trainer_init = baseline_registry.get_trainer("oracle")
+            #trainer_init = PPOTrainerO
         
         config.defrost()
         config.RL.PPO.hidden_size = 512 if agent_type=="no-map" else 768

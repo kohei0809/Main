@@ -11,8 +11,6 @@ in habitat. Customized environments should be registered using
 """
 
 from typing import Optional, Type
-from utils.log_manager import LogManager
-from utils.log_writer import LogWriter
 import sys
 import numpy as np
 
@@ -192,7 +190,7 @@ class InfoRLEnv(RLEnv):
     def get_reward(self, observations, **kwargs):
         reward = self._rl_config.SLACK_REWARD
         ci = -1000
-        matrics = None
+        saliency = -1
         
         agent_position = self._env._sim.get_agent_state().position
         a_x, a_y = maps.to_grid(
@@ -204,14 +202,6 @@ class InfoRLEnv(RLEnv):
         )
         agent_position = np.array([a_x, a_y])
         
-        # distance_to_multi_goalの計算
-        """
-        current_distance = self._env.get_metrics()["distance_to_multi_goal"]
-        current_distance *= 5
-        out = self._previous_distance
-        self._previous_distance = current_distance
-        """
-        
         # area_rewardの計算
         info = self.get_info(observations)
         _top_down_map = info["top_down_map"]["map"]
@@ -221,9 +211,10 @@ class InfoRLEnv(RLEnv):
         current_area *= 10
 
         if self._take_picture():
-            #measure = self._env.get_metrics()[self._picture_measure_name]
+            measure = self._env.get_metrics()[self._picture_measure_name]
             #ci, matrics = measure[0], measure[1]
-            ci = 0.0
+            #ci = 0.0
+            saliency = measure
             
         # area_rewardを足す
         area_reward = current_area - self._previous_area
@@ -231,7 +222,7 @@ class InfoRLEnv(RLEnv):
         output = self._previous_area
         self._previous_area = current_area
 
-        return [reward, ci, current_area, output], matrics     
+        return reward, saliency, current_area, output  
     
     def get_reward2(self, observations, **kwargs):
         reward = self._rl_config.SLACK_REWARD
@@ -266,7 +257,7 @@ class InfoRLEnv(RLEnv):
         current_area *= 10
 
         measure = self._env.get_metrics()[self._picture_measure_name]
-        ci, matrics = measure[0], measure[1]
+        #ci, matrics = measure[0], measure[1]
             
         # area_rewardを足す
         area_reward = current_area - self._previous_area

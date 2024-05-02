@@ -10,6 +10,12 @@ import attr
 import numpy as np
 from gym import spaces
 import math
+import os
+os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+import torch
+from torchvision import transforms
+from scipy import stats
+from scipy.ndimage import label
 
 from habitat.config import Config
 from habitat.core.dataset import Dataset, Episode
@@ -35,6 +41,13 @@ from habitat.tasks.utils import (
     quaternion_rotate_vector,
 )
 from habitat.utils.visualizations import fog_of_war, maps
+
+from TranSalNet.utils.data_process import preprocess_img, postprocess_img
+from TranSalNet.TranSalNet_Dense import TranSalNet
+
+from warnings import simplefilter
+# ignore all future warnings
+simplefilter(action='ignore', category=FutureWarning)
 
 cv2 = try_cv2_import()
 
@@ -466,6 +479,83 @@ class Picture(Measure):
             #self._metric = 1
             
 @registry.register_measure
+class Saliency(Measure):
+    # saliencyのmaxを出力
+    # ただし、0を除いた最頻値が1ではないときは-1を返す
+
+    cls_uuid: str = "saliency"
+
+    def __init__(
+        self, sim: Simulator, config: Config, *args: Any, **kwargs: Any
+    ):
+        self._sim = sim
+        self._config = config
+        super().__init__(**kwargs)
+
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.transalnet_model = TranSalNet()
+        self.transalnet_model.load_state_dict(torch.load('TranSalNet/pretrained_models/TranSalNet_Dense.pth'))
+        self.transalnet_model = self.transalnet_model.to(self.device) 
+        self.transalnet_model.eval()
+
+    def _get_uuid(self, *args: Any, **kwargs: Any):
+        return self.cls_uuid
+    
+    def get_metric(self):
+        return self._metric
+
+    def reset_metric(self, *args: Any, episode, task, **kwargs: Any):
+        task.measurements.check_measure_dependencies(self.uuid, [Picture.cls_uuid])
+        self.update_metric(*args, episode=episode, task=task, **kwargs)
+    
+    def update_metric(self, *args: Any, episode, task: EmbodiedTask, **kwargs: Any):
+        take_picture = task.measurements.measures[
+            Picture.cls_uuid
+        ].get_metric()
+        
+        observation = self._sim.get_observations_at()["rgb"]
+        
+        if take_picture:
+            self._metric = self._cal_saliency(observation)
+        else:
+            self._metric = -1
+
+    def _cal_saliency(self, obs):
+        img = preprocess_img(image=obs) # padding and resizing input image into 384x288
+        img = np.array(img)/255.
+        img = np.expand_dims(np.transpose(img,(2,0,1)),axis=0)
+        img = torch.from_numpy(img)
+    
+        if torch.cuda.is_available():
+            img = img.type(torch.cuda.FloatTensor).to(self.device)
+        else:
+            img = img.type(torch.FloatTensor).to(self.device)
+        
+        pred_saliency = self.transalnet_model(img)
+        toPIL = transforms.ToPILImage()
+        pic = toPIL(pred_saliency.squeeze())
+
+        pred_saliency = postprocess_img(pic, org_image=obs)
+        #high_saliency = pred_saliency[pred_saliency >= 224]
+    
+        # 0を削除
+        non_zero_pred_saliency = pred_saliency[pred_saliency != 0]
+        flag = (stats.mode(non_zero_pred_saliency).mode == 1)
+        #return pred_saliency.max()
+        #return high_saliency.shape[0]
+        if flag == True:
+            return self._count_saliency_regions(pred_saliency)
+        else:
+            return -1
+
+    def _count_saliency_regions(self, saliency_map, threshold=192):
+        # 二値化
+        binary_map = (saliency_map > threshold).astype(int)
+        # 0で区切られている領域を見つける
+        labeled_map, num_regions = label(binary_map)
+        return num_regions
+
+@registry.register_measure
 class CI(Measure):
     cls_uuid: str = "ci"
 
@@ -495,12 +585,13 @@ class CI(Measure):
         take_picture = task.measurements.measures[
             Picture.cls_uuid
         ].get_metric()
-        
+        """
         observation = self._sim.get_observations_at()
         semantic_obs = self._to_category_id(observation["semantic"])
         H = semantic_obs.shape[0]
         W = semantic_obs.shape[1]
         self._matrics = np.zeros((H, W))
+        """
         take_picture=True
         if take_picture:
             #print(observation)

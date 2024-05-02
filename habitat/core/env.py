@@ -23,8 +23,8 @@ from habitat.sims import make_sim
 from habitat.tasks import make_task
 from habitat_baselines.common.utils import quat_from_angle_axis
 from habitat.core.logging import logger
-from utils.log_manager import LogManager
-from utils.log_writer import LogWriter
+from log_manager import LogManager
+from log_writer import LogWriter
 #import habitat.articulated_agents.humanoids.kinematic_humanoid as kinematic_humanoid
 
 import matplotlib.pyplot as plt

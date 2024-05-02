@@ -2,7 +2,7 @@ BASE_TASK_CONFIG_PATH: "configs/tasks/maximuminfo_mp3d.yaml"
 TRAINER_NAME: "ppo"
 ENV_NAME: "InfoRLEnv"
 SIMULATOR_GPU_ID: 0
-TORCH_GPU_ID: 1
+TORCH_GPU_ID: 0
 #VIDEO_OPTION: []
 VIDEO_OPTION: ["disk"]
 TENSORBOARD_DIR: "tb/train"
@@ -16,12 +16,12 @@ SENSORS: ["RGB_SENSOR", "DEPTH_SENSOR", "SEMANTIC_SENSOR"]
 CHECKPOINT_FOLDER: "cpt"
 NUM_UPDATES: 3000000
 LOG_INTERVAL: 1
-CHECKPOINT_INTERVAL: 1
+CHECKPOINT_INTERVAL: 2
 
 RL:
   REWARD_MEASURE: "fow_map"
   TAKE_PICTURE_MEASURE: "picture"
-  PICTURE_MEASURE: "ci"
+  PICTURE_MEASURE: "saliency"
   PREVIOUS_ACTION_EMBEDDING_SIZE: 32
   PREVIOUS_ACTION: True
   PPO:
@@ -29,7 +29,6 @@ RL:
     clip_param: 0.2
     ppo_epoch: 2
     num_mini_batch: 4
-    #num_mini_batch: 1
     value_loss_coef: 0.5
     entropy_coef: 0.01
     lr: 2.5e-4

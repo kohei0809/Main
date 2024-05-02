@@ -55,17 +55,11 @@ class MaximumInfoDatasetV1(Dataset):
         cfg.defrost()
         cfg.CONTENT_SCENES = []
         dataset = cls(cfg)
-        logger.info("BBB: " + str(dataset_dir))
-        logger.info("DATASET: " + str(dataset.content_scenes_path))
-        logger.info("AAA: " + str(dataset.content_scenes_path.split("{scene}")[0].format(
-                data_path=dataset_dir
-            )))
         has_individual_scene_files = os.path.exists(
             dataset.content_scenes_path.split("{scene}")[0].format(
                 data_path=dataset_dir
             )
         )
-        logger.info("INDIVIDUAL: " + str(has_individual_scene_files))
         if has_individual_scene_files:
             return cls._get_scenes_from_folder(
                 content_scenes_path=dataset.content_scenes_path,

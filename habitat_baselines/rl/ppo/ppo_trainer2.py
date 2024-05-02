@@ -21,7 +21,6 @@ import math
 import numpy as np
 import torch
 import torch.nn.functional as F
-import torch_scatter
 import tqdm
 from torch.optim.lr_scheduler import LambdaLR
 
@@ -43,8 +42,8 @@ from habitat_baselines.common.utils import (
     linear_decay,
 )
 from habitat_baselines.rl.ppo import PPOOracle, BaselinePolicyOracle, ProposedPolicyOracle
-from utils.log_manager import LogManager
-from utils.log_writer import LogWriter
+from log_manager import LogManager
+from log_writer import LogWriter
 from habitat.utils.visualizations import fog_of_war, maps
 
 
@@ -53,66 +52,6 @@ def to_grid(coordinate_min, coordinate_max, global_map_size, position):
     grid_x = ((coordinate_max - position[0]) / grid_size).round()
     grid_y = ((position[1] - coordinate_min) / grid_size).round()
     return int(grid_x), int(grid_y)
-
-
-def draw_projection(image, depth, s, global_map_size, coordinate_min, coordinate_max):
-    image = torch.tensor(image).permute(2, 0, 1).unsqueeze(0)
-    depth = torch.tensor(depth).permute(2, 0, 1).unsqueeze(0)
-    spatial_locs, valid_inputs = _compute_spatial_locs(depth, s, global_map_size, coordinate_min, coordinate_max)
-    x_gp1 = _project_to_ground_plane(image, spatial_locs, valid_inputs, s)
-    
-    return x_gp1
-
-
-def _project_to_ground_plane(img_feats, spatial_locs, valid_inputs, s):
-    outh, outw = (s, s)
-    bs, f, HbyK, WbyK = img_feats.shape
-    device = img_feats.device
-    eps=-1e16
-    K = 1
-
-    # Sub-sample spatial_locs, valid_inputs according to img_feats resolution.
-    idxes_ss = ((torch.arange(0, HbyK, 1)*K).long().to(device), \
-                (torch.arange(0, WbyK, 1)*K).long().to(device))
-
-    spatial_locs_ss = spatial_locs[:, :, idxes_ss[0][:, None], idxes_ss[1]] # (bs, 2, HbyK, WbyK)
-    valid_inputs_ss = valid_inputs[:, :, idxes_ss[0][:, None], idxes_ss[1]] # (bs, 1, HbyK, WbyK)
-    valid_inputs_ss = valid_inputs_ss.squeeze(1) # (bs, HbyK, WbyK)
-    invalid_inputs_ss = ~valid_inputs_ss
-
-    # Filter out invalid spatial locations
-    invalid_spatial_locs = (spatial_locs_ss[:, 1] >= outh) | (spatial_locs_ss[:, 1] < 0 ) | \
-                        (spatial_locs_ss[:, 0] >= outw) | (spatial_locs_ss[:, 0] < 0 ) # (bs, H, W)
-
-    invalid_writes = invalid_spatial_locs | invalid_inputs_ss
-
-    # Set the idxes for all invalid locations to (0, 0)
-    spatial_locs_ss[:, 0][invalid_writes] = 0
-    spatial_locs_ss[:, 1][invalid_writes] = 0
-
-    # Weird hack to account for max-pooling negative feature values
-    invalid_writes_f = rearrange(invalid_writes, 'b h w -> b () h w').float()
-    img_feats_masked = img_feats * (1 - invalid_writes_f) + eps * invalid_writes_f
-    img_feats_masked = rearrange(img_feats_masked, 'b e h w -> b e (h w)')
-
-    # Linearize ground-plane indices (linear idx = y * W + x)
-    linear_locs_ss = spatial_locs_ss[:, 1] * outw + spatial_locs_ss[:, 0] # (bs, H, W)
-    linear_locs_ss = rearrange(linear_locs_ss, 'b h w -> b () (h w)')
-    linear_locs_ss = linear_locs_ss.expand(-1, f, -1) # .contiguous()
-
-    proj_feats, _ = torch_scatter.scatter_max(
-                        img_feats_masked,
-                        linear_locs_ss,
-                        dim=2,
-                        dim_size=outh*outw,
-                    )
-    proj_feats = rearrange(proj_feats, 'b e (h w) -> b e h w', h=outh)
-
-    # Replace invalid features with zeros
-    eps_mask = (proj_feats == eps).float()
-    proj_feats = proj_feats * (1 - eps_mask) + eps_mask * (proj_feats - eps)
-
-    return proj_feats
 
 
 def _compute_spatial_locs(depth_inputs, s, global_map_size, coordinate_min, coordinate_max):

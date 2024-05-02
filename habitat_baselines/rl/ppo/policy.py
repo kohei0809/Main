@@ -15,9 +15,6 @@ from habitat_baselines.rl.models.rnn_state_encoder import RNNStateEncoder
 from habitat_baselines.rl.models.simple_cnn import RGBCNNOracle, MapCNN, MapCNN_Pre
 from habitat_baselines.rl.models.projection import Projection
 from habitat.core.logging import logger
-from utils.log_manager import LogManager
-from utils.log_writer import LogWriter
-
 
 
 class PolicyOracle(nn.Module):

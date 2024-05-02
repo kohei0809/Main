@@ -89,13 +89,14 @@ class BaseRLTrainerOracle(BaseTrainer):
             ), "Must specify a directory for storing videos on disk"
 
         # evaluate multiple checkpoints in order
-        current_ckpt = 684
+        current_ckpt = 108
         logger.info(f"=======current_ckpt: {current_ckpt}=======")
+        checkpoint_path = f"{self.config.EVAL_CKPT_PATH_DIR}/ckpt.{current_ckpt}.pth"
         self._eval_checkpoint(
-            checkpoint_path=current_ckpt,
+            checkpoint_path=checkpoint_path,
             log_manager=log_manager,
             date=date,
-            checkpoint_index=prev_ckpt_ind,
+            checkpoint_index=current_ckpt,
         )
 
     def _setup_eval_config(self, checkpoint_config: Config) -> Config:
@@ -173,13 +174,13 @@ class BaseRLTrainerOracle(BaseTrainer):
         not_done_masks,
         current_episode_reward,
         current_episode_exp_area,
-        current_episode_ci,
         current_episode_similarity,
+        current_episode_picsim,
         current_episode_each_sim,
+        current_episode_sum_saliency,
         prev_actions,
         batch,
         rgb_frames,
-        rgb_obs=[],
     ):
         # pausing self.envs with no new episode
         if len(envs_to_pause) > 0:
@@ -195,17 +196,16 @@ class BaseRLTrainerOracle(BaseTrainer):
             not_done_masks = not_done_masks[state_index]
             current_episode_reward = current_episode_reward[state_index]
             current_episode_exp_area = current_episode_exp_area[state_index]
-            current_episode_ci = current_episode_ci[state_index]
             current_episode_similarity = current_episode_similarity[state_index]
+            current_episode_picsim = current_episode_picsim[state_index]
             current_episode_each_sim = current_episode_each_sim[state_index]
+            current_episode_sum_saliency = current_episode_sum_saliency[state_index]
             prev_actions = prev_actions[state_index]
 
             for k, v in batch.items():
                 batch[k] = v[state_index]
 
             rgb_frames = [rgb_frames[i] for i in state_index]
-            if len(rgb_obs) != 0:
-                rgb_obs = [rgb_obs[i] for i in state_index]
 
         return (
             envs,
@@ -213,11 +213,11 @@ class BaseRLTrainerOracle(BaseTrainer):
             not_done_masks,
             current_episode_reward,
             current_episode_exp_area,
-            current_episode_ci,
             current_episode_similarity,
+            current_episode_picsim,
             current_episode_each_sim,
+            current_episode_sum_saliency,
             prev_actions,
             batch,
             rgb_frames,
-            rgb_obs,
         )

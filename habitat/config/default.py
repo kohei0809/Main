@@ -156,7 +156,11 @@ _C.TASK.CI.HIGH_REGION_WEIGHT = 5.0
 _C.TASK.CI.LOW_CATEGORY_VALUE = -0.01
 _C.TASK.CI.MID_CATEGORY_VALUE = 1.0
 _C.TASK.CI.HIGH_CATEGORY_VALUE = 2.0
-
+# -----------------------------------------------------------------------------
+# Saliency MEASUREMENT
+# -----------------------------------------------------------------------------
+_C.TASK.SALIENCY = CN()
+_C.TASK.SALIENCY.TYPE = "Saliency"
 # -----------------------------------------------------------------------------
 # SUCCESS MEASUREMENT
 # -----------------------------------------------------------------------------
