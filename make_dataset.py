@@ -18,6 +18,8 @@ from habitat.datasets.maximum_info.maximuminfo_dataset import MaximumInfoDataset
 from habitat.datasets.maximum_info.maximuminfo_generator import generate_maximuminfo_episode
 from habitat.core.env import Env
 
+from habitat.core.logging import logger
+
    
 if __name__ == '__main__':
     save_train = True
@@ -49,7 +51,7 @@ if __name__ == '__main__':
     episode_num = 20000
     
     i = 0
-    dataset_path = "data/datasets/maximuminfo/v2/"
+    dataset_path = "data/datasets/maximuminfo/v3/"
     dataset_train = MaximumInfoDatasetV1()
     dataset_val = MaximumInfoDatasetV1()
     dataset_test = MaximumInfoDatasetV1()
@@ -80,14 +82,20 @@ if __name__ == '__main__':
 
     df = pd.DataFrame({'scene_id': scene_ids, 'type': types, 'description': descriptions})      
             
+    logger.info(dirs)
+    i = 0
     while(True):
+        logger.info("###################")
+        logger.info(f"i:{i}")
         if i >= len(dirs):
             break
         scene = dirs[i]
+        scene_type = df[df["scene_id"]==scene]["type"].item()
+        logger.info(f"scene: {scene}, type: {scene_type}")
         if df[df["scene_id"]==scene]["type"].item()=="train":
             config.defrost()
             split = "train"
-            episode_num = 100000
+            episode_num = 200000
             config.TASK_CONFIG.SIMULATOR.SCENE = "data/scene_datasets/mp3d/" + scene + "/" + scene + ".glb"
             config.TASK_CONFIG.DATASET.DATA_PATH = dataset_path + split + "/" + split +  ".json.gz"
             config.freeze()
@@ -98,7 +106,7 @@ if __name__ == '__main__':
         elif df[df["scene_id"]==scene]["type"].item()=="val":
             config.defrost()
             split = "val"
-            episode_num = 100
+            episode_num = 20
             config.TASK_CONFIG.SIMULATOR.SCENE = "data/scene_datasets/mp3d/" + scene + "/" + scene + ".glb"
             config.TASK_CONFIG.DATASET.DATA_PATH = dataset_path + split + "/" + split +  ".json.gz"
             config.freeze()
@@ -109,7 +117,7 @@ if __name__ == '__main__':
         elif df[df["scene_id"]==scene]["type"].item()=="test":
             config.defrost()
             split = "test"
-            episode_num = 500
+            episode_num = 20
             config.TASK_CONFIG.SIMULATOR.SCENE = "data/scene_datasets/mp3d/" + scene + "/" + scene + ".glb"
             config.TASK_CONFIG.DATASET.DATA_PATH = dataset_path + split + "/" + split +  ".json.gz"
             config.freeze()
@@ -121,8 +129,8 @@ if __name__ == '__main__':
             break
 
         
-        print(str(i) + ": SPLIT:train, NUM:" + str(episode_num) + ", TOTAL_NUM:" + str(len(dataset_train.episodes)))
-        print("SCENE:" + scene)
+        logger.info(str(i) + ": SPLIT:train, NUM:" + str(episode_num) + ", TOTAL_NUM:" + str(len(dataset_train.episodes)))
+        logger.info("SCENE:" + scene)
         sim.close()
         
         i += 1
@@ -143,4 +151,3 @@ if __name__ == '__main__':
         with gzip.open(dataset_path + "test/test.json.gz", "wt") as f:
             f.write(dataset_test.to_json())
             print("save test")
-                        

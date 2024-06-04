@@ -11,7 +11,7 @@ import numpy as np
 from gym import spaces
 import math
 import os
-os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+#os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 import torch
 from torchvision import transforms
 from scipy import stats
@@ -480,14 +480,12 @@ class Picture(Measure):
             
 @registry.register_measure
 class Saliency(Measure):
-    # saliencyのmaxを出力
+    # saliencyのcountを出力
     # ただし、0を除いた最頻値が1ではないときは-1を返す
 
     cls_uuid: str = "saliency"
 
-    def __init__(
-        self, sim: Simulator, config: Config, *args: Any, **kwargs: Any
-    ):
+    def __init__(self, sim: Simulator, config: Config, *args: Any, **kwargs: Any):
         self._sim = sim
         self._config = config
         super().__init__(**kwargs)
@@ -497,6 +495,10 @@ class Saliency(Measure):
         self.transalnet_model.load_state_dict(torch.load('TranSalNet/pretrained_models/TranSalNet_Dense.pth'))
         self.transalnet_model = self.transalnet_model.to(self.device) 
         self.transalnet_model.eval()
+
+        #objectのスコア別リスト
+        #void, wall, floor, door, stairs, ceiling, column, railing
+        self.black_list = [0, 1, 2, 4, 16, 17, 24, 30]
 
     def _get_uuid(self, *args: Any, **kwargs: Any):
         return self.cls_uuid
@@ -509,19 +511,30 @@ class Saliency(Measure):
         self.update_metric(*args, episode=episode, task=task, **kwargs)
     
     def update_metric(self, *args: Any, episode, task: EmbodiedTask, **kwargs: Any):
-        take_picture = task.measurements.measures[
-            Picture.cls_uuid
-        ].get_metric()
+        take_picture = task.measurements.measures[Picture.cls_uuid].get_metric()
         
-        observation = self._sim.get_observations_at()["rgb"]
+        observation = self._sim.get_observations_at()
         
         if take_picture:
-            self._metric = self._cal_saliency(observation)
+            self._metric = self._cal_picture_value(observation)
         else:
             self._metric = -1
+            ####
+            self._metric = self._cal_picture_value(observation)
 
-    def _cal_saliency(self, obs):
-        img = preprocess_img(image=obs) # padding and resizing input image into 384x288
+    def _to_category_id(self, obs):
+        scene = self._sim._sim.semantic_scene
+        instance_id_to_label_id = {int(obj.id.split("_")[-1]): obj.category.index() for obj in scene.objects}
+        mapping = np.array([ instance_id_to_label_id[i] for i in range(len(instance_id_to_label_id)) ])
+
+        semantic_obs = np.take(mapping, obs)
+        semantic_obs[semantic_obs>=40] = 0
+        semantic_obs[semantic_obs<0] = 0
+        return semantic_obs
+
+    def _cal_picture_value(self, obs):
+        rgb_obs = obs["rgb"]
+        img = preprocess_img(image=rgb_obs) # padding and resizing input image into 384x288
         img = np.array(img)/255.
         img = np.expand_dims(np.transpose(img,(2,0,1)),axis=0)
         img = torch.from_numpy(img)
@@ -531,29 +544,39 @@ class Saliency(Measure):
         else:
             img = img.type(torch.FloatTensor).to(self.device)
         
-        pred_saliency = self.transalnet_model(img)
+        raw_saliency, pred_saliency = self.transalnet_model(img)
         toPIL = transforms.ToPILImage()
         pic = toPIL(pred_saliency.squeeze())
 
-        pred_saliency = postprocess_img(pic, org_image=obs)
-        #high_saliency = pred_saliency[pred_saliency >= 224]
-    
+        pred_saliency = postprocess_img(pic, org_image=rgb_obs)
+        
         # 0を削除
         non_zero_pred_saliency = pred_saliency[pred_saliency != 0]
-        flag = (stats.mode(non_zero_pred_saliency).mode == 1)
-        #return pred_saliency.max()
-        #return high_saliency.shape[0]
+        #flag = (stats.mode(non_zero_pred_saliency).mode == 1)
+        flag = True
         if flag == True:
-            return self._count_saliency_regions(pred_saliency)
+            count_sal = raw_saliency[raw_saliency > 0].shape[0]
+            sem_obs = self._to_category_id(obs["semantic"])
+            H = sem_obs.shape[0]
+            W = sem_obs.shape[1]
+
+            #objectのcategoryリスト
+            category = []
+            for i in range(H):
+                for j in range(W):
+                    obs = sem_obs[i][j]
+                    if obs not in category:
+                        if obs not in self.black_list:
+                            category.append(obs)
+            #num_category = max(len(category), 1.0)
+            num_category = len(category)
+
+            picture_value = count_sal * num_category
+            
+            return picture_value
+            #return self._count_saliency_regions(pred_saliency)
         else:
             return -1
-
-    def _count_saliency_regions(self, saliency_map, threshold=192):
-        # 二値化
-        binary_map = (saliency_map > threshold).astype(int)
-        # 0で区切られている領域を見つける
-        labeled_map, num_regions = label(binary_map)
-        return num_regions
 
 @registry.register_measure
 class CI(Measure):
@@ -571,7 +594,7 @@ class CI(Measure):
         return self.cls_uuid
     
     def get_metric(self):
-        return self._metric, self._matrics
+        return self._metric
 
     def reset_metric(self, *args: Any, episode, task, **kwargs: Any):
         task.measurements.check_measure_dependencies(
@@ -592,16 +615,15 @@ class CI(Measure):
         W = semantic_obs.shape[1]
         self._matrics = np.zeros((H, W))
         """
-        take_picture=True
+        #take_picture=True
         if take_picture:
-            #print(observation)
             #measure = self._calCI()
-            measure = 0, None
-            self._metric = measure[0]
-            self._matrics = measure[1]
-            #self._metric = 0 
+            #self._metric = measure
+            self._metric = -1
         else:
-            self._metric = 0 
+            #self._metric = measure
+            #self._metric = 0 
+            self._metric = -1
             
     def _to_category_id(self, obs):
         scene = self._sim._sim.semantic_scene
@@ -617,66 +639,23 @@ class CI(Measure):
     def _calCI(self, *args: Any, **kwargs: Any):
         observation = self._sim.get_observations_at()
         semantic_obs = self._to_category_id(observation["semantic"])
-        depth_obs = observation["depth"]
+        #depth_obs = observation["depth"]
         H = semantic_obs.shape[0]
         W = semantic_obs.shape[1]
-        size = H * W
-        #imp_matrics = np.zeros((H, W))
-        imp_matrics = None
-    
-        #objectのスコア別リスト
-        #void, wall, floor, door, stairs, ceiling, column, railing
-        score0 = [0, 1, 2, 4, 16, 17, 24, 30] 
-        #chair, table, picture, cabinet, window, curtain, chest_of_drawers, sink, toilet, stool, shower, bathtub, counter, lighting, beam, shelving, blinds, seating, objects
-        #score1 = [3, 5, 6, 7, 9, 12, 13, 15, 18, 19, 23, 25, 26, 28, 29, 31, 32, 34, 39]
-        #cushion, sofa, bed, plant, towel, mirror, tv_monitor, fireplace, gym_equipment, board_panel, furniture, appliances, clothes
-        #score2 = [8, 10, 11, 14, 20, 21, 22, 27, 33, 35, 36, 37, 38]
-    
-        #############
-        score1 = []
-        score2 = [3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 18, 19, 20, 21, 22, 23, 25, 26, 27, 28, 29, 31, 32, 33, 34, 35, 36, 37, 38, 39]
-        ##############
-    
+
         #objectのcategoryリスト
         category = []
     
         ci = 0.0
         for i in range(H):
             for j in range(W):
-                """
-                #領域スコア
-                if i >= 96 and i <= 159 and j >= 96 and j <= 159:
-                    w = self._config.HIGH_REGION_WEIGHT
-                elif i >= 64 and i <= 191 and j >= 64 and j <= 191:
-                    w = self._config.MID_REGION_WEIGHT
-                else:
-                    w = self._config.LOW_REGION_WEIGHT
-            
-                #オブジェクトまでの距離
-                d = max(depth_obs[i][j], 1.0)
-                d = math.sqrt(d)
-                """
-                
                 obs = semantic_obs[i][j]
-                if obs in score0:
-                    #オブジェクトのスコア
-                    v = self._config.LOW_CATEGORY_VALUE
-                else:
-                    if obs not in category:
-                        category.append(obs)
-                    if obs in score1:
-                        v = self._config.MID_CATEGORY_VALUE
-                    else:
-                        v = self._config.HIGH_CATEGORY_VALUE
-                
-                #score = w * v / d
-                score = v
-                ci += score
-                #imp_matrics[i][j] = score
+                if obs not in category:
+                    category.append(obs)
         
         #ci *= max(len(category), 1.0)
-        ci /= size
-        return ci, imp_matrics
+        ci = max(len(category), 1.0)
+        return ci
         
 
 @registry.register_measure

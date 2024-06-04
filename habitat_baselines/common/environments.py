@@ -190,8 +190,9 @@ class InfoRLEnv(RLEnv):
     def get_reward(self, observations, **kwargs):
         reward = self._rl_config.SLACK_REWARD
         ci = -1000
-        saliency = -1
+        picture_value = -1
         
+        """
         agent_position = self._env._sim.get_agent_state().position
         a_x, a_y = maps.to_grid(
             agent_position[0],
@@ -201,6 +202,7 @@ class InfoRLEnv(RLEnv):
             self._map_resolution,
         )
         agent_position = np.array([a_x, a_y])
+        """
         
         # area_rewardの計算
         info = self.get_info(observations)
@@ -214,7 +216,7 @@ class InfoRLEnv(RLEnv):
             measure = self._env.get_metrics()[self._picture_measure_name]
             #ci, matrics = measure[0], measure[1]
             #ci = 0.0
-            saliency = measure
+            picture_value = measure
             
         # area_rewardを足す
         area_reward = current_area - self._previous_area
@@ -222,7 +224,7 @@ class InfoRLEnv(RLEnv):
         output = self._previous_area
         self._previous_area = current_area
 
-        return reward, saliency, current_area, output  
+        return reward, picture_value, current_area, output, self._take_picture()
     
     def get_reward2(self, observations, **kwargs):
         reward = self._rl_config.SLACK_REWARD
@@ -239,33 +241,11 @@ class InfoRLEnv(RLEnv):
             self._map_resolution,
         )
         agent_position = np.array([a_x, a_y])
-        
-        # distance_to_multi_goalの計算
-        """
-        current_distance = self._env.get_metrics()["distance_to_multi_goal"]
-        current_distance *= 5
-        out = self._previous_distance
-        self._previous_distance = current_distance
-        """
-        
-        # area_rewardの計算
-        info = self.get_info(observations)
-        _top_down_map = info["top_down_map"]["map"]
-        _fog_of_war_map = info["top_down_map"]["fog_of_war_mask"]
-        
-        current_area = self._cal_explored_rate(_top_down_map, _fog_of_war_map)
-        current_area *= 10
+    
 
-        measure = self._env.get_metrics()[self._picture_measure_name]
-        #ci, matrics = measure[0], measure[1]
-            
-        # area_rewardを足す
-        area_reward = current_area - self._previous_area
-        reward += area_reward
-        output = self._previous_area
-        self._previous_area = current_area
+        picture_value = self._env.get_metrics()["saliency"]
 
-        return [reward, ci, current_area, output], matrics        
+        return picture_value  
     
     def get_polar_angle(self):
         agent_state = self._env._sim.get_agent_state()

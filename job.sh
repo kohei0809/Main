@@ -1,8 +1,8 @@
 #!/bin/sh
 #$ -cwd
-#$ -l node_q=1
+#$ -l node_f=1
 #$ -j y
-#$ -l h_rt=1:00:00
+#$ -l h_rt=95:40:00
 #$ -o output/o.$JOB_ID
 
 . /etc/profile.d/modules.sh
@@ -20,13 +20,6 @@ pwd
 . /home/7/ur02047/anaconda3/etc/profile.d/conda.sh
 conda activate habitat2
 
-git add --all
-echo finish
-
-#cd test_llava
-#python test_llava.py
-#python run.py --run-type random
-#python run.py --run-type train
-#python run.py --run-type eval
+CUDA_LAUNCH_BLOCKING=1 python run.py --run-type train2
+#python run.py --run-type eval2
 #python research_picture_value.py
-#CUDA_LAUNCH_BLOCKING=1 python make_saliency_and_similarity.py

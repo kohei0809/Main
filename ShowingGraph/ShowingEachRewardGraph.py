@@ -5,17 +5,14 @@ import pathlib
 date = "24-02-18 15-24-41"
 #date = "24-02-20 18-05-03"
 #date = "24-02-21 23-05-39"
-date = "24-02-24 06-09-40"
-mode = "train"
-#mode = "eval"
+date = "24-05-16 16-06-47"
+mode = "train2"
 
-df1 = pd.read_csv("log/" + date + "/" + mode + "/reward.csv", names=['time', 'reward'], header=None)
-df2 = pd.read_csv("log/" + date + "/" + mode + "/metrics.csv", names=['time', 'ci', 'exp_area', 'similarity', 'path_length'], header=None)
+df1 = pd.read_csv(f"log/{date}/{mode}/reward.csv", names=['time', 'reward'], header=None)
+df2 = pd.read_csv(f"log/{date}/{mode}/metrics.csv", names=['time', 'exp_area', 'similarity',  'picture_value', 'pic_sim', 'path_length'], header=None)
 plt.plot(df1['time'], df1['reward'], color="red", label="Reward")
-plt.plot(df2['time'], df2['ci']/5, color="blue", label="CI")
+plt.plot(df2['time'], df2['similarity'], color="blue", label="Similarity")
 plt.plot(df2['time'], df2['exp_area'], color="green", label="Exp Area")
-plt.plot(df2['time'], df2['similarity']*10, color="black", label="Similarity")
-
 
 #ラベルの追加
 plt.xlabel('Training Steps')

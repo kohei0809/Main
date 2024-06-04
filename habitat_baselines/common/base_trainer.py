@@ -66,7 +66,7 @@ class BaseRLTrainerOracle(BaseTrainer):
     def train(self) -> None:
         raise NotImplementedError
 
-    def eval(self, log_manager, date) -> None:
+    def eval(self, log_manager, date, current_ckpt) -> None:
         r"""Main method of trainer evaluation. Calls _eval_checkpoint() that
         is specified in Trainer class that inherits from BaseRLTrainer
 
@@ -89,7 +89,6 @@ class BaseRLTrainerOracle(BaseTrainer):
             ), "Must specify a directory for storing videos on disk"
 
         # evaluate multiple checkpoints in order
-        current_ckpt = 108
         logger.info(f"=======current_ckpt: {current_ckpt}=======")
         checkpoint_path = f"{self.config.EVAL_CKPT_PATH_DIR}/ckpt.{current_ckpt}.pth"
         self._eval_checkpoint(
@@ -174,20 +173,21 @@ class BaseRLTrainerOracle(BaseTrainer):
         not_done_masks,
         current_episode_reward,
         current_episode_exp_area,
+        current_episode_picture_value,
         current_episode_similarity,
         current_episode_picsim,
-        current_episode_each_sim,
-        current_episode_sum_saliency,
         prev_actions,
         batch,
         rgb_frames,
     ):
+        #logger.info("!!!!!!!!!!!!!!!!!!")   
+        #logger.info(envs_to_pause)
         # pausing self.envs with no new episode
         if len(envs_to_pause) > 0:
             state_index = list(range(envs.num_envs))
             for idx in reversed(envs_to_pause):
                 state_index.pop(idx)
-                envs.pause_at(idx)
+                #envs.pause_at(idx)
 
             # indexing along the batch dimensions
             test_recurrent_hidden_states = test_recurrent_hidden_states[
@@ -196,10 +196,9 @@ class BaseRLTrainerOracle(BaseTrainer):
             not_done_masks = not_done_masks[state_index]
             current_episode_reward = current_episode_reward[state_index]
             current_episode_exp_area = current_episode_exp_area[state_index]
+            current_episode_picture_value = current_episode_picture_value[state_index]
             current_episode_similarity = current_episode_similarity[state_index]
             current_episode_picsim = current_episode_picsim[state_index]
-            current_episode_each_sim = current_episode_each_sim[state_index]
-            current_episode_sum_saliency = current_episode_sum_saliency[state_index]
             prev_actions = prev_actions[state_index]
 
             for k, v in batch.items():
@@ -213,10 +212,9 @@ class BaseRLTrainerOracle(BaseTrainer):
             not_done_masks,
             current_episode_reward,
             current_episode_exp_area,
+            current_episode_picture_value,
             current_episode_similarity,
             current_episode_picsim,
-            current_episode_each_sim,
-            current_episode_sum_saliency,
             prev_actions,
             batch,
             rgb_frames,

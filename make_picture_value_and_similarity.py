@@ -5,7 +5,6 @@ import numpy as np
 from gym import spaces
 import gzip
 import torch
-import torch.nn as nn
 import datetime
 import multiprocessing
 
@@ -25,6 +24,8 @@ from habitat.datasets.maximum_info.maximuminfo_dataset import MaximumInfoDataset
 from habitat.datasets.maximum_info.maximuminfo_generator import generate_maximuminfo_episode, generate_maximuminfo_episode2
 from habitat_baselines.common.environments import InfoRLEnv
 from habitat_baselines.common.baseline_registry import baseline_registry
+from log_manager import LogManager
+from log_writer import LogWriter
 from habitat.core.logging import logger
 
 from TranSalNet.utils.data_process import preprocess_img, postprocess_img
@@ -38,6 +39,24 @@ transalnet_model = TranSalNet()
 transalnet_model.load_state_dict(torch.load('TranSalNet/pretrained_models/TranSalNet_Dense.pth'))
 transalnet_model = transalnet_model.to(device) 
 transalnet_model.eval()
+
+    
+def create_description(picture):
+    # pictureのdescriptionを作成
+    image = Image.fromarray(picture)
+    image = vis_processors["eval"](image).unsqueeze(0).to(device)
+    generated_text = lavis_model.generate({"image": image}, use_nucleus_sampling=True,num_captions=1)[0]
+    return generated_text
+    
+def calculate_similarity(pred_description, origin_description):
+    # 文をSentence Embeddingに変換
+    embedding1 = bert_model.encode(pred_description, convert_to_tensor=True)
+    embedding2 = bert_model.encode(origin_description, convert_to_tensor=True)
+    
+    # コサイン類似度を計算
+    sentence_sim = util.pytorch_cos_sim(embedding1, embedding2).item()
+    
+    return sentence_sim
         
         
 def make_dataset_random(scene_idx):
@@ -50,12 +69,29 @@ def make_dataset_random(scene_idx):
     
     
     scene_name = dirs[scene_idx]
-    logger.info(" FOR: " + scene_name)
+    logger.info("START FOR: " + scene_name)
+    
+    # ファイルを読み込んで行ごとにリストに格納する
+    with open('data/scene_datasets/mp3d/description.txt', 'r') as file:
+        lines = file.readlines()
+
+    # scene id と文章を抽出してデータフレームに変換する
+    scene_ids = []
+    descriptions = []
+    for i in range(0, len(lines), 3):
+        scene_ids.append(lines[i].strip())
+        descriptions.append(lines[i+2].strip())
+
+    description_df = pd.DataFrame({'scene_id': scene_ids, 'description': descriptions})
+    description = description_df[description_df["scene_id"]==scene_name]["description"].item()
+    if description == "wip":
+        logger.info("############# wip ###############")
+        return False
 
     dataset_path = "map_dataset/" + scene_name + ".json.gz" 
-    
     if os.path.exists(dataset_path):
-        return True
+        logger.info("########### EXIST #############")
+        return True   
     
     config.defrost()
     config.TASK_CONFIG.SIMULATOR.SCENE = "data/scene_datasets/mp3d/" + scene_name + "/" + scene_name + ".glb"
@@ -110,11 +146,26 @@ def research_saliency_and_similarity(scene_idx):
     config.TASK_CONFIG.TRAINER_NAME = "oracle-ego"
     config.freeze()
         
-    with InfoRLEnv(config=config) as env:
-        logger.info("EPISODE NUM: "+ str(len(env.episodes)))
+    #ログファイルの設定   
+    log_manager = LogManager()
+    log_manager.setLogDirectory("research_picture_value_and_similarity/csv/")
+    log_writer = log_manager.createLogWriter("similarity_" + scene_name)
+    
+    # ファイルを読み込んで行ごとにリストに格納する
+    with open('data/scene_datasets/mp3d/description.txt', 'r') as file:
+        lines = file.readlines()
+
+    # scene id と文章を抽出してデータフレームに変換する
+    scene_ids = []
+    descriptions = []
+    for i in range(0, len(lines), 3):
+        scene_ids.append(lines[i].strip())
+        descriptions.append(lines[i+2].strip())
+
+    description_df = pd.DataFrame({'scene_id': scene_ids, 'description': descriptions})
         
-        #for i in range(len(env.episodes)):
-        for i in range(100):
+    with InfoRLEnv(config=config) as env:
+        for i in range(100):        
             #エピソードの変更
             env._env.current_episode = env.episodes[i]
             
@@ -122,57 +173,20 @@ def research_saliency_and_similarity(scene_idx):
             outputs = env.step2()
             rewards, done, info = outputs
         
-            ci = rewards
-            obs = observation["rgb"]
+            if rewards == -1:
+                continue
 
-            img = preprocess_img(image=obs) # padding and resizing input image into 384x288
-            img = np.array(img)/255.
-            img = np.expand_dims(np.transpose(img,(2,0,1)),axis=0)
-            img = torch.from_numpy(img)
-            if torch.cuda.is_available():
-                img = img.type(torch.cuda.FloatTensor).to(device)
-            else:
-                img = img.type(torch.FloatTensor).to(device)
-            raw_saliency, pred_saliency = transalnet_model(img)
-            #sigmoid = nn.Sigmoid()
-            #pred_saliency = sigmoid(raw_saliency)
-            #logger.info(f"MAX: {pred_saliency.max()}")
-
-            toPIL = transforms.ToPILImage()
-            pic = toPIL(pred_saliency.squeeze())
-            pred_saliency = postprocess_img(pic, org_image=obs)
-
-            non_zero_pred_saliency = pred_saliency[pred_saliency != 0]
-            #logger.info(f"MODE: {stats.mode(non_zero_pred_saliency).mode}, MAX: {pred_saliency.max()}")
-            flag = (stats.mode(non_zero_pred_saliency).mode == 1)
-
-            max_sal = raw_saliency.max()
-            mean_sal = raw_saliency.mean()
-            count_sal = raw_saliency[raw_saliency > 0].shape[0]
-
-            score = mean_sal * ci
-            score2 = max_sal * ci
-            score3 = count_sal * ci
-
-            picture = Image.fromarray(np.uint8(observation["rgb"]))
-            """
-            os.makedirs(f"picture_value/mean/{scene_name}", exist_ok=True)
-            file_path = f"picture_value/mean/{scene_name}/{flag}_{score}_{mean_sal}_{ci}.png"
-            picture.save(file_path)
-            os.makedirs(f"picture_value/max/{scene_name}", exist_ok=True)
-            file_path = f"picture_value/max/{scene_name}/{flag}_{score2}_{max_sal}_{ci}.png"
-            picture.save(file_path)
-            """
-            os.makedirs(f"picture_value/count/{scene_name}", exist_ok=True)
-            file_path = f"picture_value/count/{scene_name}/{flag}_{score3}_{count_sal}_{ci}.png"
-            picture.save(file_path)
-
+            description = description_df[description_df["scene_id"]==env._env.current_episode.scene_id[-15:-4]]["description"].item()
+            pred_descriotion = create_description(observation["rgb"])
+            similarity = calculate_similarity(pred_descriotion, description)
+            
+            log_writer.writeLine(str(similarity) + "," + str(rewards))
+    
         env.close()
                 
 if __name__ == '__main__':
     for i in range(90):
         scene_idx = i
-        is_create = True
         is_create = make_dataset_random(scene_idx)
         if is_create == True:
             research_saliency_and_similarity(scene_idx)

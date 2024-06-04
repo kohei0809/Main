@@ -72,41 +72,46 @@ def test(run_type: str, opts=None):
     if run_type in ["train", "train2"]:
         datadate = "" 
         config.defrost()
-        config.NUM_PROCESSES = 4
+        config.NUM_PROCESSES = 12
         config.RL.PPO.num_mini_batch = 4
+        #config.NUM_PROCESSES = 1
+        #config.RL.PPO.num_mini_batch = 1
+        config.TORCH_GPU_ID = 0
         config.freeze()
     elif run_type in ["eval", "eval2", "eval3"]:
-        datadate = "24-03-08 14-49-01"
-        #datadate = "24-03-09 01-05-42"
-        #datadate = "24-03-13 01-04-07"
-        datadate = "24-04-26 00-36-56"
-        #datadate = "test"
+        if run_type == "eval2":
+            datadate = "24-05-16 16-06-47"
+            current_ckpt = 300
+        else:
+            datadate = "24-04-26 00-36-56"
+            current_ckpt = 108
+
 
         config.defrost()
         config.RL.PPO.num_mini_batch = 4
-        config.NUM_PROCESSES = 24
-        #config.RL.PPO.num_mini_batch = 1
-        #config.NUM_PROCESSES = 1
-        config.TEST_EPISODE_COUNT = 1100
-        #config.VIDEO_OPTION = []
+        config.NUM_PROCESSES = 8
+        #config.RL.PPO.num_mini_batch = 4
+        #config.NUM_PROCESSES = 4
+        config.TEST_EPISODE_COUNT = 220
         config.VIDEO_OPTION = ["disk"]
+        config.TORCH_GPU_ID = 1
         config.freeze()
     elif run_type=="random" or run_type=="random2":
         datadate = "" 
         config.defrost()
         config.TASK_CONFIG.DATASET.SPLIT = "val"
+        config.RL.PPO.num_mini_batch = 4
         config.NUM_PROCESSES = 24
-        config.TEST_EPISODE_COUNT = 1100
-        #config.VIDEO_OPTION = []
+        config.TEST_EPISODE_COUNT = 220
         config.VIDEO_OPTION = ["disk"]
+        config.TORCH_GPU_ID = 1
         config.freeze()
     
     random.seed(config.TASK_CONFIG.SEED)
     np.random.seed(config.TASK_CONFIG.SEED)
     
     config.defrost()
-    #config.TASK_CONFIG.DATASET.DATA_PATH = "data/datasets/multinav/3_ON/{split}/{split}.json.gz"
-    config.TASK_CONFIG.DATASET.DATA_PATH = "data/datasets/maximuminfo/v1/{split}/{split}.json.gz"
+    config.TASK_CONFIG.DATASET.DATA_PATH = "data/datasets/maximuminfo/v3/{split}/{split}.json.gz"
     config.TRAINER_NAME = agent_type
     config.TASK_CONFIG.TRAINER_NAME = agent_type
     config.CHECKPOINT_FOLDER = "cpt/" + start_date
@@ -114,7 +119,7 @@ def test(run_type: str, opts=None):
     config.freeze()
     
     if agent_type in ["oracle", "oracle-ego", "no-map"]:
-        if run_type in ["train2", "eval2"]:
+        if run_type in ["train2", "eval2", "random2"]:
             trainer_init = baseline_registry.get_trainer("oracle2")
         elif run_type == "eval3":
             trainer_init = baseline_registry.get_trainer("oracle3")
@@ -153,25 +158,23 @@ def test(run_type: str, opts=None):
     logger.info("device:" + str(device))
     logger.info("-----------------------------------")
 
-    if run_type in ["train", "train2"]:
-        #フォルダがない場合は、作成
-        p_dir = pathlib.Path(config.CHECKPOINT_FOLDER)
-        if not p_dir.exists():
-            p_dir.mkdir(parents=True)
-            
-        trainer.train(log_manager, start_date)
-    elif run_type in ["eval", "eval2", "eval3"]:
-        trainer.eval(log_manager, start_date)
-    
-    elif run_type == "random":
-        trainer.random_eval(log_manager, start_date)
-    
-    elif run_type == "random2":
-        trainer.random_eval2(log_manager, start_date)
-       
-    end_date = datetime.datetime.now().strftime('%y-%m-%d %H-%M-%S') 
-    print("Start at " + start_date)
-    print("End at " + end_date)
+    try:
+        if run_type in ["train", "train2"]:
+            #フォルダがない場合は、作成
+            p_dir = pathlib.Path(config.CHECKPOINT_FOLDER)
+            if not p_dir.exists():
+                p_dir.mkdir(parents=True)
+                
+            trainer.train(log_manager, start_date)
+        elif run_type in ["eval", "eval2", "eval3"]:
+            trainer.eval(log_manager, start_date, current_ckpt)
+        
+        elif run_type in ["random", "random2"]:
+            trainer.random_eval(log_manager, start_date)
+    finally:
+        end_date = datetime.datetime.now().strftime('%y-%m-%d %H-%M-%S') 
+        print("Start at " + start_date)
+        print("End at " + end_date)
 
 if __name__ == "__main__":
     main()

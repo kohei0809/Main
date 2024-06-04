@@ -30,6 +30,8 @@ import numpy as np
 from habitat.config import Config
 from habitat.core.utils import not_none_validator
 
+from habitat.core.logging import logger
+
 ALL_SCENES_MASK = "*"
 
 

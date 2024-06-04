@@ -3,13 +3,12 @@ import matplotlib.pyplot as plt
 import pathlib
 import numpy as np
 
-date = "24-03-08 14-49-01"
-date = "24-03-09 01-05-42"
-#date = "24-02-21 23-05-39"
-#date = "24-02-24 06-09-40"
-mode = "train"
+#date = "24-04-17 18-45-23"
+date = "24-05-16 16-06-47"
+#mode = "train"
+mode = "train2"
 
-df = pd.read_csv("log/" + date + "/" + mode + "/action_prob.csv", names=['time', 'take_picture', 'forward', 'left', 'right', 'look_up', 'look_down'], header=None)
+df = pd.read_csv(f"log/{date}/{mode}/action_prob.csv", names=['time', 'take_picture', 'forward', 'left', 'right', 'look_up', 'look_down'], header=None)
 plt.plot(df['time'], df['take_picture'], color="red", label="Take Picture")
 plt.plot(df['time'], df['forward'], color="blue", label="Move Forward")
 plt.plot(df['time'], df['left'], color="green", label="Turn Left")
@@ -20,10 +19,10 @@ plt.xlabel('Training Steps')
 plt.ylabel('Action Probability')
 
 #表示範囲の指定
-plt.xlim(0, 1750000)
+#plt.xlim(0, 1750000)
 plt.ylim(0, 1.0)
 
-plt.xticks(np.arange(0, 2000000, 400000))
+#plt.xticks(np.arange(0, 2000000, 400000))
 
 #凡例の追加
 plt.legend()

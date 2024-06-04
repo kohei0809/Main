@@ -17,6 +17,8 @@ from habitat.utils.visualizations.utils import images_to_video
 from habitat_baselines.common.tensorboard_utils import TensorboardWriter
 import quaternion
 
+from habitat.core.logging import logger
+
 
 class Flatten(nn.Module):
     def forward(self, x):
@@ -50,7 +52,23 @@ class CategoricalNet(nn.Module):
         nn.init.constant_(self.linear.bias, 0)
 
     def forward(self, x):
+        #logger.info("################################")
+        #logger.info(x)
+        pre_x = x
         x = self.linear(x)
+        #logger.info(x)
+
+        # 0行目が全てnanであるかを判定
+        is_nan_row = torch.isnan(x).all(dim=1)
+
+        # 0行目が全てnanである場合、他の行をコピーした値にする
+        for i in range(x.size(0)):
+            if is_nan_row[i]:
+                logger.info("###############")
+                logger.info(pre_x)
+                logger.info(x)
+                x[i] = x[~is_nan_row][0]
+
         return CustomFixedCategorical(logits=x)
 
 
@@ -142,10 +160,9 @@ def generate_video(
     video_dir: Optional[str],
     images: List[np.ndarray],
     episode_id: int,
-    checkpoint_idx: int,
     metrics: Dict[str, float],
     name_ci = None,
-    fps: int = 5,
+    fps: int = 10,
 ) -> None:
     r"""Generate video according to specified information.
 
@@ -154,7 +171,6 @@ def generate_video(
         video_dir: path to target video directory.
         images: list of images to be converted to video.
         episode_id: episode id for video naming.
-        checkpoint_idx: checkpoint index for video naming.
         metric_name: name of the performance metric, e.g. "spl".
         metric_value: value of metric.
         fps: fps for generated video.

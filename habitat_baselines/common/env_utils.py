@@ -10,6 +10,7 @@ from typing import Type, Union
 
 import habitat
 from habitat import Config, Env, RLEnv, VectorEnv, ThreadedVectorEnv, make_dataset
+from habitat.core.logging import logger
 
 
 def make_env_fn(

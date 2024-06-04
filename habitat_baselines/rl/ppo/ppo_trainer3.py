@@ -46,57 +46,6 @@ from log_manager import LogManager
 from log_writer import LogWriter
 from habitat.utils.visualizations import fog_of_war, maps
 
-
-def to_grid(coordinate_min, coordinate_max, global_map_size, position):
-    grid_size = (coordinate_max - coordinate_min) / global_map_size
-    grid_x = ((coordinate_max - position[0]) / grid_size).round()
-    grid_y = ((position[1] - coordinate_min) / grid_size).round()
-    return int(grid_x), int(grid_y)
-
-
-def _compute_spatial_locs(depth_inputs, s, global_map_size, coordinate_min, coordinate_max):
-    bs, _, imh, imw = depth_inputs.shape
-    local_scale = float(coordinate_max - coordinate_min)/float(global_map_size)
-    cx, cy = 256./2., 256./2.
-    fx = fy =  (256. / 2.) / np.tan(np.deg2rad(79. / 2.))
-
-    #2D image coordinates
-    x    = rearrange(torch.arange(0, imw), 'w -> () () () w')
-    y    = rearrange(torch.arange(imh, 0, step=-1), 'h -> () () h ()')
-    xx   = (x - cx) / fx
-    yy   = (y - cy) / fy
-
-    # 3D real-world coordinates (in meters)
-    Z            = depth_inputs
-    X            = xx * Z
-    Y            = yy * Z
-    # valid_inputs = (depth_inputs != 0) & ((Y < 1) & (Y > -1))
-    valid_inputs = (depth_inputs != 0) & ((Y > -0.5) & (Y < 1))
-
-    # 2D ground projection coordinates (in meters)
-    # Note: map_scale - dimension of each grid in meters
-    # - depth/scale + (s-1)/2 since image convention is image y downward
-    # and agent is facing upwards.
-    x_gp            = ( (X / local_scale) + (s-1)/2).round().long() # (bs, 1, imh, imw)
-    y_gp            = (-(Z / local_scale) + (s-1)/2).round().long() # (bs, 1, imh, imw)
-
-    return torch.cat([x_gp, y_gp], dim=1), valid_inputs
-
-
-def rotate_tensor(x_gp, heading):
-    sin_t = torch.sin(heading.squeeze(1))
-    cos_t = torch.cos(heading.squeeze(1))
-    A = torch.zeros(x_gp.size(0), 2, 3)
-    A[:, 0, 0] = cos_t
-    A[:, 0, 1] = sin_t
-    A[:, 1, 0] = -sin_t
-    A[:, 1, 1] = cos_t
-
-    grid = F.affine_grid(A, x_gp.size())
-    rotated_x_gp = F.grid_sample(x_gp, grid)
-    return rotated_x_gp
-
-
 # TAKE_PICTUREごとにsimilarityを計算して報酬に加える
 @baseline_registry.register_trainer(name="oracle3")
 class PPOTrainerO3(BaseRLTrainerOracle):
@@ -1156,7 +1105,6 @@ class PPOTrainerO3(BaseRLTrainerOracle):
                             video_dir=self.config.VIDEO_DIR+"/"+date,
                             images=rgb_frames[i],
                             episode_id=current_episodes[i].episode_id,
-                            checkpoint_idx=checkpoint_index,
                             metrics=metrics,
                             name_ci=name_ci,
                         )
@@ -1500,7 +1448,6 @@ class PPOTrainerO3(BaseRLTrainerOracle):
                             video_dir=self.config.VIDEO_DIR+"/"+date,
                             images=rgb_frames[i],
                             episode_id=current_episodes[i].episode_id,
-                            checkpoint_idx=-1,
                             metrics=metrics,
                             name_ci=name_ci,
                         )
@@ -1840,7 +1787,6 @@ class PPOTrainerO3(BaseRLTrainerOracle):
                             video_dir=self.config.VIDEO_DIR+"/"+date,
                             images=rgb_frames[i],
                             episode_id=current_episodes[i].episode_id,
-                            checkpoint_idx=-1,
                             metrics=metrics,
                             name_ci=name_ci,
                         )
