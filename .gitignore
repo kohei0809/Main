@@ -207,3 +207,6 @@ research_ci_and_similarity/
 *.png
 *.jpeg
 *.json.gz
+llava-v1.5-7b
+map_dataset/*
+model/llava-v1.5-7b
