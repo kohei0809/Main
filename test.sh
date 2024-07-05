@@ -1,9 +1,10 @@
 #!/bin/sh
 #$ -cwd
-#$ -l node_q=1
+#$ -l node_f=1
 #$ -j y
-#$ -l h_rt=02:00:00
+#$ -l h_rt=00:10:00
 #$ -o output/o.$JOB_ID
+#$ -p -4
 
 . /etc/profile.d/modules.sh
 
@@ -14,6 +15,5 @@ cd /gs/fs/tga-aklab/matsumoto/Main
 . /home/7/ur02047/anaconda3/etc/profile.d/conda.sh
 conda activate habitat2
 
-python test_llava/test_llava.py
-
-echo finish
+#python test_llava/test_llava.py
+python create_viewer_video.py

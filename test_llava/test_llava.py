@@ -102,21 +102,49 @@ def human_test():
 
 if __name__ == '__main__':
     
-    human_test()
-    """
+    #human_test()
+    
     #model_path = "/gs/fs/tga-aklab/matsumoto/Main/model/llava-v1.5-7b/"
     model_path = "liuhaotian/llava-v1.5-13b"
-    image_file = "/gs/fs/tga-aklab/matsumoto/Main/pictures/result_image.png"
-    input_text = "This picture shows ten pictures in one building, five horizontally and two vertically side by side. Black lines are drawn between the pictures. From these pictures, describe the environment of this building in detail."
-    input_text = "You are an excellent property writer. This picture consists of 10 pictures arranged in one picture, 5 horizontally and 2 vertically on one building. In addition, a black line separates the pictures from each other. From each picture, you should understand the details of this building's environment and describe this building's environment in detail in the form of a summary of these pictures. At this point, do not describe each picture one at a time, but rather in a summarized form. Also note that each picture was taken in a separate location, so successive pictures are not positionally close. Additionally, do not mention which picture you are quoting from or the black line separating each picture."
+    image_file = "/gs/fs/tga-aklab/matsumoto/Main/result_images/matsumoto/result_1.png"
+    input_text = "<Instructions>\n"\
+                "You are an excellent property writer.\n"\
+                "The picture you have entered consists of 10 pictures of a building, 5 horizontally and 2 vertically placed in a single picture.\n"\
+                "Each picture is also separated by a black line.\n"\
+                "From each picture, understand the details of this building's environment, and in the form of a summary of these pictures, describe this building's environment in detail, paying attention to the <Notes>.\n"\
+                "In doing so, please also consider the location of each picture as indicated by <Location Information>.\n"\
+                "\n\n"\
+                "<Location Information>\n"\
+                "The top leftmost picture is picture_1, and from its right to left are picture_2, picture_3, picture_4, and picture_5.\n"\
+                "Similarly, the bottom-left corner is picture_6, and from its right, picture_7, picture_8, picture_9, and picture_10.\n"\
+                "The following is the location information for each picture.\n\n"\
+                "picture_1 : (-1.720, 10.050)\n"\
+                "picture_2 : (-3.336, 4.277)\n"\
+                "picture_3 : (-0.250, -4.250)\n"\
+                "picture_4 : (6.473, -9.606)\n"\
+                "picture_5 : (7.103, -7.400)\n"\
+                "picture_6 : (2.094, -18.094)\n"\
+                "picture_7 : (-5.632, -17.180)\n"\
+                "picture_8 : (-4.080, 0.388)\n"\
+                "picture_9 : (-1.059, -13.591)\n"\
+                "picture_10 : (-0.066, -7.193)\n"\
+                "<Notes>\n"\
+                "・Note that each picture is taken at the location indicated by <Location Information>, and that adjacent pictures are not close in location.\n"\
+                "・Please output the location information for each picture from <Location Information>.\n"\
+                "・When describing the environment, do not mention whether it was taken from that picture or the black line separating each picture.\n"\
+                "・Only refer to the structure of the description from <Example of output>, and do not use your imagination to describe things not shown in the picture.\n"\
+                "\n\n"\
+                "<Example of output>\n"\
+                "This building features a spacious layout with multiple living rooms, bedrooms, and bathrooms. A living space with a fireplace is next to a fully equipped kitchen. There are also three bedrooms on the left side of the building, with a bathroom nearby. There are plenty of books to work with.\n"\
+                "Overall, the apartment is spacious and well-equipped, with many paintings on the walls."
+        
     image = load_image(image_file)
-    response = generate_response(image, input_text)
+    response = generate_response(image, input_text, model_path)
 
     #plt.imshow(image)
     #plt.axis('off') 
     #plt.show()
 
-    print(f"Q:{input_text}")
+    #print(f"Q:{input_text}")
     print(f"A:{response[4:-4]}")
-    """
     print("FINISH !!")

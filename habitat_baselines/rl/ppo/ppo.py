@@ -98,9 +98,7 @@ class PPOOracle(nn.Module):
                     actions_batch,
                 )
 
-                ratio = torch.exp(
-                    action_log_probs - old_action_log_probs_batch
-                )
+                ratio = torch.exp(action_log_probs - old_action_log_probs_batch)
                 surr1 = ratio * adv_targ
                 surr2 = (
                     torch.clamp(

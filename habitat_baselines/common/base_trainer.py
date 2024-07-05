@@ -12,7 +12,6 @@ import torch
 
 from habitat import Config
 from habitat.core.logging import logger
-from habitat_baselines.common.tensorboard_utils import TensorboardWriter
 from habitat_baselines.common.utils import poll_checkpoint_folder
 
 
@@ -28,9 +27,6 @@ class BaseTrainer:
         raise NotImplementedError
 
     def eval(self) -> None:
-        raise NotImplementedError
-    
-    def grad_cam(self) -> None:
         raise NotImplementedError
 
     def save_checkpoint(self, file_name) -> None:

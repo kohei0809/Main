@@ -195,7 +195,6 @@ _C.TASK.FOW_MAP.FOV = 79
 _C.TASK.PICTURE_MAP = CN()
 _C.TASK.PICTURE_MAP.VISIBILITY_DIST = 6.0
 _C.TASK.PICTURE_MAP.FOV = 79
-
 # -----------------------------------------------------------------------------
 # TopDownMap MEASUREMENT
 # -----------------------------------------------------------------------------
@@ -216,6 +215,44 @@ _C.TASK.TOP_DOWN_MAP.DRAW_VIEW_POINTS = True
 _C.TASK.TOP_DOWN_MAP.DRAW_GOAL_POSITIONS = True
 # Axes aligned bounding boxes
 _C.TASK.TOP_DOWN_MAP.DRAW_GOAL_AABBS = True
+# -----------------------------------------------------------------------------
+# NewTopDownMap MEASUREMENT
+# -----------------------------------------------------------------------------
+_C.TASK.NEW_TOP_DOWN_MAP = CN()
+_C.TASK.NEW_TOP_DOWN_MAP.TYPE = "NewTopDownMap"
+_C.TASK.NEW_TOP_DOWN_MAP.MAX_EPISODE_STEPS = _C.ENVIRONMENT.MAX_EPISODE_STEPS
+_C.TASK.NEW_TOP_DOWN_MAP.MAP_PADDING = 3
+_C.TASK.NEW_TOP_DOWN_MAP.NUM_TOPDOWN_MAP_SAMPLE_POINTS = 20000
+_C.TASK.NEW_TOP_DOWN_MAP.MAP_RESOLUTION = 1250
+_C.TASK.NEW_TOP_DOWN_MAP.DRAW_BORDER = True
+# -----------------------------------------------------------------------------
+# ExploredMap MEASUREMENT
+# -----------------------------------------------------------------------------
+_C.TASK.EXPLORED_MAP = CN()
+_C.TASK.EXPLORED_MAP.TYPE = "ExploredMap"
+_C.TASK.EXPLORED_MAP.MAX_EPISODE_STEPS = _C.ENVIRONMENT.MAX_EPISODE_STEPS
+_C.TASK.EXPLORED_MAP.MAP_PADDING = 3
+_C.TASK.EXPLORED_MAP.NUM_TOPDOWN_MAP_SAMPLE_POINTS = 20000
+_C.TASK.EXPLORED_MAP.MAP_RESOLUTION = 1250
+_C.TASK.EXPLORED_MAP.DRAW_SOURCE = True
+_C.TASK.EXPLORED_MAP.DRAW_BORDER = True
+_C.TASK.EXPLORED_MAP.DRAW_SHORTEST_PATH = True
+_C.TASK.EXPLORED_MAP.FOG_OF_WAR = CN()
+_C.TASK.EXPLORED_MAP.FOG_OF_WAR.DRAW = True
+_C.TASK.EXPLORED_MAP.FOG_OF_WAR.VISIBILITY_DIST = 5.0
+_C.TASK.EXPLORED_MAP.FOG_OF_WAR.FOV = 79
+_C.TASK.EXPLORED_MAP.DRAW_VIEW_POINTS = True
+_C.TASK.EXPLORED_MAP.DRAW_GOAL_POSITIONS = True
+# Axes aligned bounding boxes
+_C.TASK.EXPLORED_MAP.DRAW_GOAL_AABBS = True
+
+# -----------------------------------------------------------------------------
+# SmoothMapValue MEASUREMENT
+# -----------------------------------------------------------------------------
+_C.TASK.SMOOTH_MAP_VALUE = CN()
+_C.TASK.SMOOTH_MAP_VALUE.TYPE = "SmoothMapValue"
+_C.TASK.SMOOTH_MAP_VALUE.NUM_TOPDOWN_MAP_SAMPLE_POINTS = 20000
+_C.TASK.SMOOTH_MAP_VALUE.MAP_RESOLUTION = 1250
 
 # -----------------------------------------------------------------------------
 # PictureRangeMap MEASUREMENT

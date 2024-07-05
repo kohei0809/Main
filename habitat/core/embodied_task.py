@@ -17,6 +17,7 @@ from habitat.core.dataset import Dataset, Episode
 from habitat.core.registry import registry
 from habitat.core.simulator import Observations, SensorSuite, Simulator
 from habitat.core.spaces import ActionSpace, EmptySpace, Space
+from habitat.core.logging import logger
 
 
 class Action:
@@ -324,7 +325,7 @@ class EmbodiedTask:
 
     def get_action_name(self, action_index: int):
         if action_index >= len(self.actions):
-            raise ValueError(f"Action index '{action}' is out of range.")
+            raise ValueError(f"Action index '{action_index}' is out of range.")
         return self._action_keys[action_index]
 
     @property

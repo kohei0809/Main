@@ -142,3 +142,30 @@ def generate_maximuminfo_episode2(sim: Simulator, num_episodes: int = -1, z_list
 
         episode_count += 1
         yield episode
+
+
+def generate_maximuminfo_episode3(config, num_episodes: int = -1, initial_position: tuple = None, initial_rotation: tuple = None) -> MaximumInformationEpisode:
+    episode_count = 0
+    while episode_count < num_episodes or num_episodes < 0:
+        if episode_count % 1000 == 0:
+            logger.info(episode_count)
+
+        source_position = initial_position
+        if source_position is None:
+            source_position = sim.sample_navigable_point()
+        
+        #print(source_position)
+        source_rotation = initial_rotation
+        if source_rotation is None:
+            angle = np.random.uniform(0, 2 * np.pi)
+            source_rotation = [0, np.sin(angle / 2), 0, np.cos(angle / 2)]
+
+        episode = _create_episode(
+            episode_id=episode_count,
+            scene_id=config.TASK_CONFIG.SIMULATOR.SCENE,
+            start_position=source_position,
+            start_rotation=source_rotation,
+        )
+
+        episode_count += 1
+        yield episode

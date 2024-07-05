@@ -11,8 +11,9 @@ in habitat. Customized environments should be registered using
 """
 
 from typing import Optional, Type
-import sys
+
 import numpy as np
+import pandas as pd
 
 from habitat.core.logging import logger
 import habitat
@@ -22,7 +23,6 @@ from habitat.utils.visualizations import fog_of_war, maps
 from habitat.core.env import RLEnv
 from habitat.tasks.utils import (
     cartesian_to_polar,
-    quaternion_from_coeff,
     quaternion_rotate_vector,
 )
 
@@ -47,14 +47,11 @@ class NavRLEnv(habitat.RLEnv):
         self._reward_measure_name = self._rl_config.REWARD_MEASURE
         self._take_measure_name = self._rl_config.SUCCESS_MEASURE
         self._subsuccess_measure_name = self._rl_config.SUBSUCCESS_MEASURE
-
-
         self._previous_measure = None
-        self._previous_action = None
+
         super().__init__(self._core_env_config, dataset)
 
     def reset(self):
-        self._previous_action = None
         observations = super().reset()
         self._previous_measure = self._env.get_metrics()[
             self._reward_measure_name
@@ -62,7 +59,6 @@ class NavRLEnv(habitat.RLEnv):
         return observations
 
     def step(self, *args, **kwargs):
-        self._previous_action = kwargs["action"]
         return super().step(*args, **kwargs)
 
     def get_reward_range(self):
@@ -109,8 +105,8 @@ class NavRLEnv(habitat.RLEnv):
 
     def get_info(self, observations):
         return self.habitat_env.get_metrics()
-    
-    
+
+
 @baseline_registry.register_env(name="InfoRLEnv")
 class InfoRLEnv(RLEnv):
     def __init__(self, config: Config, dataset: Optional[Dataset] = None):
@@ -121,10 +117,7 @@ class InfoRLEnv(RLEnv):
         self._reward_measure_name = self._rl_config.REWARD_MEASURE
         self._picture_measure_name = self._rl_config.PICTURE_MEASURE
 
-
         self._previous_area = None
-        self._previous_distance = None
-        self._previous_action = None
         
         self._map_resolution = (300, 300)
         self._coordinate_min = -120.3241-1e-6
@@ -139,19 +132,21 @@ class InfoRLEnv(RLEnv):
         self.close()
 
     def reset(self):
-        self._previous_action = None
         self.fog_of_war_map_all = None
         observations = super().reset()
         self._previous_area = 0.0
-        """
-        self._previous_distance = self._env.get_metrics()["distance_to_multi_goal"]
-        self._previous_distance *= 5
-        """
+        
+        self._scene_data = pd.DataFrame(columns=['object_name', 'id'])
+        semantic_scene = self._env._sim._sim.semantic_scene
+        for level in semantic_scene.levels:
+            for region in level.regions:
+                for obj in region.objects:
+                    new_row = pd.DataFrame({'object_name': [obj.category.name()], 'id': [int(obj.id.split('_')[-1])]})
+                    self._scene_data = pd.concat([self._scene_data, new_row], ignore_index=True)
         
         return observations
 
     def step(self, *args, **kwargs):
-        self._previous_action = kwargs["action"]
         return super().step(*args, **kwargs)
     
     def step2(self, *args, **kwargs):
@@ -191,41 +186,34 @@ class InfoRLEnv(RLEnv):
         reward = self._rl_config.SLACK_REWARD
         ci = -1000
         picture_value = -1
-        
-        """
-        agent_position = self._env._sim.get_agent_state().position
-        a_x, a_y = maps.to_grid(
-            agent_position[0],
-            agent_position[2],
-            self._coordinate_min,
-            self._coordinate_max,
-            self._map_resolution,
-        )
-        agent_position = np.array([a_x, a_y])
-        """
-        
-        # area_rewardの計算
         info = self.get_info(observations)
-        _top_down_map = info["top_down_map"]["map"]
-        _fog_of_war_map = info["top_down_map"]["fog_of_war_mask"]
+
+        if "smooth_map_value" in info:
+            smooth_current_area = info["smooth_map_value"]
+            area_reward = smooth_current_area / 50      
+            output = 0.0
+            reward += area_reward
+            #logger.info(f"smooth_current_area={smooth_current_area}, smooth_value={smooth_value}")
+        else:
+            # area_rewardの計算
+            _top_down_map = info["top_down_map"]["map"]
+            _fog_of_war_map = info["top_down_map"]["fog_of_war_mask"]
+
+            current_area = self._cal_explored_rate(_top_down_map, _fog_of_war_map)
+            current_area *= 10
+            # area_rewardを足す
+            area_reward = current_area - self._previous_area
+            reward += area_reward
+            output = 0.0
+            self._previous_area = current_area
         
-        current_area = self._cal_explored_rate(_top_down_map, _fog_of_war_map)
-        current_area *= 10
+        measure = self._env.get_metrics()[self._picture_measure_name]
+        picture_value = measure
 
-        if self._take_picture():
-            measure = self._env.get_metrics()[self._picture_measure_name]
-            #ci, matrics = measure[0], measure[1]
-            #ci = 0.0
-            picture_value = measure
-            
-        # area_rewardを足す
-        area_reward = current_area - self._previous_area
-        reward += area_reward
-        output = self._previous_area
-        self._previous_area = current_area
+        agent_position = self._env._sim.get_agent_state().position
 
-        return reward, picture_value, current_area, output, self._take_picture()
-    
+        return reward, picture_value, area_reward, output, self._take_picture(), self._scene_data, agent_position[0], agent_position[2]
+        
     def get_reward2(self, observations, **kwargs):
         reward = self._rl_config.SLACK_REWARD
         #reward = 0
@@ -269,4 +257,3 @@ class InfoRLEnv(RLEnv):
 
     def get_info(self, observations):
         return self.habitat_env.get_metrics()
-

@@ -45,6 +45,8 @@ from habitat.utils.visualizations import fog_of_war, maps
 from TranSalNet.utils.data_process import preprocess_img, postprocess_img
 from TranSalNet.TranSalNet_Dense import TranSalNet
 
+from log_manager import LogManager
+
 from warnings import simplefilter
 # ignore all future warnings
 simplefilter(action='ignore', category=FutureWarning)
@@ -475,8 +477,9 @@ class Picture(Measure):
         ):
             self._metric = 1
         else:
-            self._metric = 0
-            #self._metric = 1
+            #self._metric = 0
+            # without TAKE-PICTURE
+            self._metric = 1
             
 @registry.register_measure
 class Saliency(Measure):
@@ -495,10 +498,6 @@ class Saliency(Measure):
         self.transalnet_model.load_state_dict(torch.load('TranSalNet/pretrained_models/TranSalNet_Dense.pth'))
         self.transalnet_model = self.transalnet_model.to(self.device) 
         self.transalnet_model.eval()
-
-        #objectのスコア別リスト
-        #void, wall, floor, door, stairs, ceiling, column, railing
-        self.black_list = [0, 1, 2, 4, 16, 17, 24, 30]
 
     def _get_uuid(self, *args: Any, **kwargs: Any):
         return self.cls_uuid
@@ -527,6 +526,10 @@ class Saliency(Measure):
         instance_id_to_label_id = {int(obj.id.split("_")[-1]): obj.category.index() for obj in scene.objects}
         mapping = np.array([ instance_id_to_label_id[i] for i in range(len(instance_id_to_label_id)) ])
 
+        if mapping.shape <= obs.max():
+            logger.info(f"########### mapping={mapping.shape}, obs_max = {obs.max()} ##############")
+            obs[obs >= mapping.shape] = 0
+            logger.info(f"########### Modified !!! mapping={mapping.shape}, obs_max = {obs.max()} ##############")
         semantic_obs = np.take(mapping, obs)
         semantic_obs[semantic_obs>=40] = 0
         semantic_obs[semantic_obs<0] = 0
@@ -561,15 +564,17 @@ class Saliency(Measure):
             W = sem_obs.shape[1]
 
             #objectのcategoryリスト
-            category = []
+            category_num = [0] * 40
             for i in range(H):
                 for j in range(W):
                     obs = sem_obs[i][j]
-                    if obs not in category:
-                        if obs not in self.black_list:
-                            category.append(obs)
-            #num_category = max(len(category), 1.0)
-            num_category = len(category)
+                    category_num[obs] += 1
+
+            obs_shape = H*W
+            num_category = 0
+            for i in range(40):
+                if category_num[i] >= obs_shape*0.05:
+                    num_category += 1
 
             picture_value = count_sal * num_category
             
@@ -601,6 +606,10 @@ class CI(Measure):
             self.uuid, [Picture.cls_uuid]
         )
         self.update_metric(*args, episode=episode, task=task, **kwargs)
+
+        #########
+        #scene = self._sim._sim.semantic_scene
+        #self.print_scene_recur(scene, 1000)
     
     def update_metric(
         self, *args: Any, episode, task: EmbodiedTask, **kwargs: Any
@@ -624,8 +633,30 @@ class CI(Measure):
             #self._metric = measure
             #self._metric = 0 
             self._metric = -1
+
+    def print_scene_recur(self, scene, limit_output=10):
+        count = 0
+        for level in scene.levels:
+            logger.info(
+                f"Level id:{level.id}, center:{level.aabb.center},"
+                f" dims:{level.aabb.sizes}"
+            )
+            for region in level.regions:
+                logger.info(
+                    f"Region id:{region.id}, category:{region.category.name()},"
+                    f" center:{region.aabb.center}, dims:{region.aabb.sizes}"
+                )
+                for obj in region.objects:
+                    logger.info(
+                        f"Object id:{obj.id}, category:{obj.category.name()},"
+                        f" center:{obj.aabb.center}, dims:{obj.aabb.sizes}"
+                    )
+                    count += 1
+                    if count >= limit_output:
+                        return None
             
     def _to_category_id(self, obs):
+        #logger.info(obs)
         scene = self._sim._sim.semantic_scene
         instance_id_to_label_id = {int(obj.id.split("_")[-1]): obj.category.index() for obj in scene.objects}
         mapping = np.array([ instance_id_to_label_id[i] for i in range(len(instance_id_to_label_id)) ])
@@ -1471,7 +1502,407 @@ class TopDownMap(Measure):
                 * max(self._map_resolution)
                 / (self._coordinate_max - self._coordinate_min),
             )
+
+
+@registry.register_measure
+class NewTopDownMap(Measure):
+    r"""New Top Down Map measure
+    """
+
+    def __init__(
+        self, *args: Any, sim: Simulator, config: Config, **kwargs: Any
+    ):
+        self._sim = sim
+        self._config = config
+        self._grid_delta = config.MAP_PADDING
+        self._step_count = None
+        self._map_resolution = (config.MAP_RESOLUTION, config.MAP_RESOLUTION)
+        self._num_samples = config.NUM_TOPDOWN_MAP_SAMPLE_POINTS
+        self._ind_x_min = None
+        self._ind_x_max = None
+        self._ind_y_min = None
+        self._ind_y_max = None
+        self._previous_xy_location = None
+        self._coordinate_min = maps.COORDINATE_MIN
+        self._coordinate_max = maps.COORDINATE_MAX
+        self._top_down_map = None
+        self.point_padding = 2 * int(
+            np.ceil(self._map_resolution[0] / MAP_THICKNESS_SCALAR)
+        )
+        self.z_dict = {}
+        super().__init__()
+
+    def _get_uuid(self, *args: Any, **kwargs: Any):
+        return "new_top_down_map"
+
+    def get_original_map(self, z_value):
+        top_down_map = maps.get_topdown_map(
+            self._sim,
+            self._map_resolution,
+            self._num_samples,
+            self._config.DRAW_BORDER,
+        )
+
+        range_x = np.where(np.any(top_down_map, axis=1))[0]
+        range_y = np.where(np.any(top_down_map, axis=0))[0]
+
+        self._ind_x_min = range_x[0]
+        self._ind_x_max = range_x[-1]
+        self._ind_y_min = range_y[0]
+        self._ind_y_max = range_y[-1]
+
+        self.z_dict[z_value] = (
+                                top_down_map,
+                                self._ind_x_min,
+                                self._ind_x_max,
+                                self._ind_y_min,
+                                self._ind_y_max
+                                )
+
+        return top_down_map
+
+    def reset_metric(self, *args: Any, episode, **kwargs: Any):
+        self._step_count = 0
+        self._metric = None
+        agent_position = self._sim.get_agent_state().position
+        self._top_down_map = self.get_original_map(agent_position[1])
+        a_x, a_y = maps.to_grid(
+            agent_position[0],
+            agent_position[2],
+            self._coordinate_min,
+            self._coordinate_max,
+            self._map_resolution,
+        )
             
+        self.update_metric(None, None)
+
+    def _clip_map(self, _map):
+        return _map[
+            self._ind_x_min
+            - self._grid_delta : self._ind_x_max
+            + self._grid_delta,
+            self._ind_y_min
+            - self._grid_delta : self._ind_y_max
+            + self._grid_delta,
+        ]
+
+    def update_metric(self, episode, action, *args: Any, **kwargs: Any):
+        self._step_count += 1
+        house_map, map_agent_x, map_agent_y = self.update_map(
+            self._sim.get_agent_state().position
+        )
+
+        # Rather than return the whole map which may have large empty regions,
+        # only return the occupied part (plus some padding).
+        clipped_house_map = self._clip_map(house_map)
+        clipped_fog_of_war_map = np.ones(clipped_house_map.shape, dtype="int8")
+
+        self._metric = {
+            "map": clipped_house_map,
+            "fog_of_war_mask": clipped_fog_of_war_map,
+            "agent_map_coord": (
+                map_agent_x - (self._ind_x_min - self._grid_delta),
+                map_agent_y - (self._ind_y_min - self._grid_delta),
+            ),
+            "agent_angle": self.get_polar_angle(),
+        }
+
+    def get_polar_angle(self):
+        agent_state = self._sim.get_agent_state()
+        # quaternion is in x, y, z, w format
+        ref_rotation = agent_state.rotation
+
+        heading_vector = quaternion_rotate_vector(
+            ref_rotation.inverse(), np.array([0, 0, -1])
+        )
+
+        phi = cartesian_to_polar(-heading_vector[2], heading_vector[0])[1]
+        x_y_flip = -np.pi / 2
+        return np.array(phi) + x_y_flip
+
+    def update_map(self, agent_position):
+        if agent_position[1] in self.z_dict:
+            (
+                self._top_down_map, 
+                self._ind_x_min, 
+                self._ind_x_max, 
+                self._ind_y_min, 
+                self._ind_y_max
+            ) = self.z_dict[agent_position[1]]
+        else:
+            self.__top_down_map = self.get_original_map(agent_position[1])
+        a_x, a_y = maps.to_grid(
+            agent_position[0],
+            agent_position[2],
+            self._coordinate_min,
+            self._coordinate_max,
+            self._map_resolution,
+        )
+
+        return self._top_down_map, a_x, a_y
+            
+
+@registry.register_measure
+class ExploredMap(Measure):
+    r"""Explored Map measure"""
+
+    def __init__(
+        self, *args: Any, sim: Simulator, config: Config, **kwargs: Any
+    ):
+        self._sim = sim
+        self._config = config
+        self._grid_delta = config.MAP_PADDING
+        self._step_count = None
+        self._map_resolution = (config.MAP_RESOLUTION, config.MAP_RESOLUTION)
+        self._num_samples = config.NUM_TOPDOWN_MAP_SAMPLE_POINTS
+        self._ind_x_min = None
+        self._ind_x_max = None
+        self._ind_y_min = None
+        self._ind_y_max = None
+        self._previous_xy_location = None
+        self._coordinate_min = maps.COORDINATE_MIN
+        self._coordinate_max = maps.COORDINATE_MAX
+        self._top_down_map = None
+        self.point_padding = 2 * int(
+            np.ceil(self._map_resolution[0] / MAP_THICKNESS_SCALAR)
+        )
+        super().__init__()
+
+    def _get_uuid(self, *args: Any, **kwargs: Any):
+        return "explored_map"
+
+
+    def get_original_map(self):
+        top_down_map = maps.get_topdown_map(
+            self._sim,
+            self._map_resolution,
+            self._num_samples,
+            self._config.DRAW_BORDER,
+        )
+
+        range_x = np.where(np.any(top_down_map, axis=1))[0]
+        range_y = np.where(np.any(top_down_map, axis=0))[0]
+
+        self._ind_x_min = range_x[0]
+        self._ind_x_max = range_x[-1]
+        self._ind_y_min = range_y[0]
+        self._ind_y_max = range_y[-1]
+
+        if self._config.FOG_OF_WAR.DRAW:
+            self._fog_of_war_mask = np.zeros_like(top_down_map)
+
+        return top_down_map
+
+    def _draw_point(self, position, point_type):
+        t_x, t_y = maps.to_grid(
+            position[0],
+            position[2],
+            self._coordinate_min,
+            self._coordinate_max,
+            self._map_resolution,
+        )
+        self._top_down_map[
+            t_x - self.point_padding : t_x + self.point_padding + 1,
+            t_y - self.point_padding : t_y + self.point_padding + 1,
+        ] = point_type
+
+        if self._ind_x_min > t_x - self.point_padding:
+           self._ind_x_min = t_x - self.point_padding 
+        if self._ind_x_max < t_x + self.point_padding:
+           self._ind_x_max = t_x + self.point_padding 
+        if self._ind_y_min > t_y - self.point_padding:
+           self._ind_y_min = t_y - self.point_padding 
+        if self._ind_y_max > t_y + self.point_padding:
+           self._ind_y_max = t_y + self.point_padding 
+
+
+    def _draw_goals_positions(self, position):
+        try:
+            self._draw_point(
+                position, maps.MAP_TARGET_POINT_INDICATOR
+            )
+        except AttributeError:
+            pass
+
+
+    def reset_metric(self, *args: Any, episode, **kwargs: Any):
+        self._step_count = 0
+        self._metric = None
+        self._top_down_map = self.get_original_map()
+        agent_position = self._sim.get_agent_state().position
+        a_x, a_y = maps.to_grid(
+            agent_position[0],
+            agent_position[2],
+            self._coordinate_min,
+            self._coordinate_max,
+            self._map_resolution,
+        )
+
+        self.start_position_x = agent_position[0]
+        self.start_position_y = agent_position[2]
+        self.start_grid_x = a_x
+        self.start_grid_y = a_y
+
+        self._previous_xy_location = (a_y, a_x)
+
+        self.update_fog_of_war_mask(np.array([a_x, a_y]))
+
+        # draw source and target parts last to avoid overlap
+        self._draw_goals_positions((episode.start_position[0]+1.0, episode.start_position[1], episode.start_position[2]+1.0))
+
+        if self._config.DRAW_SOURCE:
+            self._draw_point(
+                episode.start_position, maps.MAP_SOURCE_POINT_INDICATOR
+            )
+            
+        self.update_metric(None, None)
+
+    def _clip_map(self, _map):
+        return _map[
+            self._ind_x_min
+            - self._grid_delta : self._ind_x_max
+            + self._grid_delta,
+            self._ind_y_min
+            - self._grid_delta : self._ind_y_max
+            + self._grid_delta,
+        ]
+
+    def update_metric(self, episode, action, *args: Any, **kwargs: Any):
+        self._step_count += 1
+        house_map, map_agent_x, map_agent_y = self.update_map(
+            self._sim.get_agent_state().position
+        )
+
+        # Rather than return the whole map which may have large empty regions,
+        # only return the occupied part (plus some padding).
+        #clipped_house_map = self._clip_map(house_map)
+        clipped_house_map = house_map
+
+        clipped_fog_of_war_map = None
+        if self._config.FOG_OF_WAR.DRAW:
+            #clipped_fog_of_war_map = self._clip_map(self._fog_of_war_mask)
+            clipped_fog_of_war_map= self._fog_of_war_mask
+
+        self._metric = {
+            "map": clipped_house_map,
+            "fog_of_war_mask": clipped_fog_of_war_map,
+            "start_position": (self.start_position_x, self.start_position_y),
+        }
+
+    def get_polar_angle(self):
+        agent_state = self._sim.get_agent_state()
+        # quaternion is in x, y, z, w format
+        ref_rotation = agent_state.rotation
+
+        heading_vector = quaternion_rotate_vector(
+            ref_rotation.inverse(), np.array([0, 0, -1])
+        )
+
+        phi = cartesian_to_polar(-heading_vector[2], heading_vector[0])[1]
+        x_y_flip = -np.pi / 2
+        return np.array(phi) + x_y_flip
+
+    def update_map(self, agent_position):
+        a_x, a_y = maps.to_grid(
+            agent_position[0],
+            agent_position[2],
+            self._coordinate_min,
+            self._coordinate_max,
+            self._map_resolution,
+        )
+
+        self.update_fog_of_war_mask(np.array([a_x, a_y]))
+
+        self._previous_xy_location = (a_y, a_x)
+        return self._top_down_map, a_x, a_y
+
+    def update_fog_of_war_mask(self, agent_position):
+        if self._config.FOG_OF_WAR.DRAW:
+            self._fog_of_war_mask = fog_of_war.reveal_fog_of_war(
+                self._top_down_map,
+                self._fog_of_war_mask,
+                agent_position,
+                self.get_polar_angle(),
+                fov=self._config.FOG_OF_WAR.FOV,
+                max_line_len=self._config.FOG_OF_WAR.VISIBILITY_DIST
+                * max(self._map_resolution)
+                / (self._coordinate_max - self._coordinate_min),
+            )
+
+
+@registry.register_measure
+class SmoothMapValue(Measure):
+    r"""Smooth Map Value measure"""
+
+    def __init__(
+        self, *args: Any, sim: Simulator, config: Config, **kwargs: Any
+    ):
+        self._sim = sim
+        self._config = config
+        self._map_resolution = (config.MAP_RESOLUTION, config.MAP_RESOLUTION)
+        self._num_samples = config.NUM_TOPDOWN_MAP_SAMPLE_POINTS
+        self._coordinate_min = maps.COORDINATE_MIN
+        self._coordinate_max = maps.COORDINATE_MAX
+        self._top_down_map = None
+        super().__init__()
+        self.log_manager = LogManager()
+        self.log_manager.setLogDirectory("./smooth_value")
+        self.log_index = 0
+
+    def _get_uuid(self, *args: Any, **kwargs: Any):
+        return "smooth_map_value"
+
+
+    def get_original_map(self):
+        top_down_map = maps.get_topdown_map(
+            self._sim,
+            self._map_resolution,
+            self._num_samples,
+            False,
+        )
+
+        self._top_down_map = np.zeros(top_down_map.shape)
+        #logger.info(f"########## TopDown Map Shape={self._top_down_map.shape}")
+
+
+    def reset_metric(self, *args: Any, episode, **kwargs: Any):
+        self._metric = None
+        self.get_original_map()
+            
+        self.update_metric(None, None)
+
+
+    def update_metric(self, episode, action, *args: Any, **kwargs: Any):
+        agent_position = self._sim.get_agent_state().position
+        a_x, a_y = maps.to_grid(
+            agent_position[0],
+            agent_position[2],
+            self._coordinate_min,
+            self._coordinate_max,
+            self._map_resolution,
+        )
+        """
+        self.log_writer = self.log_manager.createLogWriter(f"smooth_value_{self.log_index}")
+        self.log_index += 1
+        for i in range(self._top_down_map.shape[0]):
+            for j in range(self._top_down_map.shape[1]):
+                self.log_writer.write(str(self._top_down_map[i][j]))
+            self.log_writer.writeLine()
+        """
+
+        self._top_down_map[a_x, a_y] += 1
+
+        explored_map = self._top_down_map[self._top_down_map != 0]
+        
+        # 各要素の平方の逆数を計算
+        inverse_squares = 1 / np.square(explored_map)
+    
+        # 逆数の合計を計算
+        result = np.sum(inverse_squares)
+        explored_size = explored_map.size
+        #logger.info(f"########## explored_size = {explored_size} ############")
+        self._metric = result / explored_size
+
 
 @registry.register_measure
 class PictureRangeMap(Measure):
@@ -1510,8 +1941,6 @@ class PictureRangeMap(Measure):
     def _get_uuid(self, *args: Any, **kwargs: Any):
         return "picture_range_map"
 
-    def _check_valid_nav_point(self, point: List[float]):
-        self._sim.is_navigable(point)
 
     def get_original_map(self):
         top_down_map = maps.get_topdown_map(
@@ -2101,6 +2530,17 @@ class MoveForwardAction(SimulatorTaskAction):
         task.is_found_called = False ##C
         return self._sim.step(HabitatSimActions.MOVE_FORWARD)
 
+@registry.register_task_action
+class MoveBackwardAction(SimulatorTaskAction):
+    name: str = "MOVE_BACKWARD"
+
+    def step(self, *args: Any, task: EmbodiedTask, **kwargs: Any):
+        r"""Update ``_metric``, this method is called from ``Env`` on each
+        ``step``.
+        """
+        task.is_found_called = False ##C
+        return self._sim.step(HabitatSimActions.MOVE_BACKWARD)
+
 
 @registry.register_task_action
 class TurnLeftAction(SimulatorTaskAction):
@@ -2120,6 +2560,38 @@ class TurnRightAction(SimulatorTaskAction):
         """
         task.is_found_called = False ##C
         return self._sim.step(HabitatSimActions.TURN_RIGHT)
+
+
+@registry.register_task_action
+class MoveBackwardAction(SimulatorTaskAction):
+    name: str = "MOVEBACKWARD"
+
+    def step(self, *args: Any, task: EmbodiedTask, **kwargs: Any):
+        r"""Update ``_metric``, this method is called from ``Env`` on each
+        ``step``.
+        """
+        task.is_found_called = False ##C
+        return self._sim.step(HabitatSimActions.MOVEBACKWARD)
+
+
+@registry.register_task_action
+class MoveLeftAction(SimulatorTaskAction):
+    def step(self, *args: Any,  task: EmbodiedTask, **kwargs: Any):
+        r"""Update ``_metric``, this method is called from ``Env`` on each
+        ``step``.
+        """
+        task.is_found_called = False ##C
+        return self._sim.step(HabitatSimActions.MOVE_LEFT)
+
+
+@registry.register_task_action
+class MoveRightAction(SimulatorTaskAction):
+    def step(self, *args: Any,  task: EmbodiedTask, **kwargs: Any):
+        r"""Update ``_metric``, this method is called from ``Env`` on each
+        ``step``.
+        """
+        task.is_found_called = False ##C
+        return self._sim.step(HabitatSimActions.MOVE_RIGHT)
 
 
 @registry.register_task_action
@@ -2239,14 +2711,13 @@ class TeleportAction(SimulatorTaskAction):
         )
 
 
-
 @registry.register_task(name="Nav-v0")
 class NavigationTask(EmbodiedTask):
     def __init__(
         self, config: Config, sim: Simulator, dataset: Optional[Dataset] = None
     ) -> None:
         super().__init__(config=config, sim=sim, dataset=dataset)
-        
+
     def overwrite_sim_config(
         self, sim_config: Any, episode: Type[Episode]
     ) -> Any:
@@ -2254,7 +2725,8 @@ class NavigationTask(EmbodiedTask):
 
     def _check_episode_is_active(self, *args: Any, **kwargs: Any) -> bool:
         return not getattr(self, "is_stop_called", False)
-    
+
+
 @registry.register_task(name="Info-v0")
 class InformationTask(EmbodiedTask):
     def __init__(

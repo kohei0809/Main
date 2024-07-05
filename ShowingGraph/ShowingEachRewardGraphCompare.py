@@ -3,9 +3,10 @@ import matplotlib.pyplot as plt
 import pathlib
 
 date1 = "23-10-26 18-29-56"
-date2 = "23-10-26 19-48-15"
+date2 = "24-06-14 15-28-02"
+date = "24-06-17 21-11-51"
 
-mode = "train"
+mode = "train3"
 #mode = "eval"
 
 df_reward1 = pd.read_csv("log/" + date1 + "/" + mode + "/reward.csv", names=['time', 'reward'], header=None)

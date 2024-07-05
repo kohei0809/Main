@@ -61,7 +61,7 @@ class Episode:
         default=None, validator=not_none_validator
     )
     description: str = attr.ib(
-        default=None, validator=not_none_validator
+        default="", validator=not_none_validator
     )
     info: Optional[Dict[str, str]] = None
     _shortest_path_cache: Any = attr.ib(init=False, default=None)

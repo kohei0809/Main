@@ -14,7 +14,6 @@ import torch
 import torch.nn as nn
 
 from habitat.utils.visualizations.utils import images_to_video
-from habitat_baselines.common.tensorboard_utils import TensorboardWriter
 import quaternion
 
 from habitat.core.logging import logger
@@ -196,6 +195,27 @@ def generate_video(
     if "disk" in video_option:
         assert video_dir is not None
         images_to_video(images, video_dir, video_name)
+
+def generate_video2(
+    video_dir: Optional[str],
+    images: List[np.ndarray],
+    fps: int = 100,
+) -> None:
+    r"""Generate video according to specified information.
+
+    Args:
+        video_dir: path to target video directory.
+        images: list of images to be converted to video.
+        fps: fps for generated video.
+    Returns:
+        None
+    """
+    if len(images) < 1:
+        return
+
+    video_name = f"video"
+    
+    images_to_video(images, video_dir, video_name, fps)
 
 def quat_from_angle_axis(theta: float, axis: np.ndarray) -> np.quaternion:
     r"""Creates a quaternion from angle axis format

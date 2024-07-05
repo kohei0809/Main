@@ -22,7 +22,8 @@ class _DefaultHabitatSimActions(Enum):
     TURN_RIGHT = 3
     LOOK_UP = 4
     LOOK_DOWN = 5
-    FOUND=6
+    FOUND = 6
+    MOVE_BACKWARD = 7
 
 
 @attr.s(auto_attribs=True, slots=True)
@@ -97,6 +98,12 @@ class HabitatSimV0ActionSpaceConfiguration(ActionSpaceConfiguration):
             HabitatSimActions.STOP: habitat_sim.ActionSpec("stop"),
             HabitatSimActions.MOVE_FORWARD: habitat_sim.ActionSpec(
                 "move_forward",
+                habitat_sim.ActuationSpec(
+                    amount=self.config.FORWARD_STEP_SIZE
+                ),
+            ),
+            HabitatSimActions.MOVE_BACKWARD: habitat_sim.ActionSpec(
+                "move_backward",
                 habitat_sim.ActuationSpec(
                     amount=self.config.FORWARD_STEP_SIZE
                 ),

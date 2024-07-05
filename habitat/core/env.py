@@ -21,7 +21,6 @@ from habitat.core.simulator import Observations, Simulator
 from habitat.datasets import make_dataset
 from habitat.sims import make_sim
 from habitat.tasks import make_task
-from habitat_baselines.common.utils import quat_from_angle_axis
 from habitat.core.logging import logger
 from log_manager import LogManager
 from log_writer import LogWriter
@@ -56,7 +55,6 @@ class Env:
     _config: Config
     _dataset: Optional[Dataset]
     _episodes: List[Type[Episode]]
-    _current_episode_index: Optional[int]
     _current_episode: Optional[Type[Episode]]
     _episode_iterator: Optional[Iterator]
     _sim: Simulator
@@ -93,7 +91,6 @@ class Env:
         )
         self._config = config
         self._dataset = dataset
-        self._current_episode_index = None
         if self._dataset is None and config.DATASET.TYPE:
             self._dataset = make_dataset(
                 id_dataset=config.DATASET.TYPE, config=config.DATASET
@@ -410,6 +407,40 @@ class Env:
         self._update_step_stats()
         return observations
 
+    def step2(
+        self, action: Union[int, str, Dict[str, Any]], **kwargs
+    ) -> Observations:
+        r"""Perform an action in the environment and return observations.
+
+        :param action: action (belonging to `action_space`) to be performed
+            inside the environment. Action is a name or index of allowed
+            task's action and action arguments (belonging to action's
+            `action_space`) to support parametrized and continuous actions.
+        :return: observations after taking action in environment.
+        """
+
+        assert (
+            self._episode_start_time is not None
+        ), "Cannot call step before calling reset"
+        assert (
+            self._episode_over is False
+        ), "Episode over, call reset before calling step"
+
+        # Support simpler interface as well
+        if isinstance(action, str) or isinstance(action, (int, np.integer)):
+            action = {"action": action}
+
+        observations = self.task.step(
+            action=action, episode=self.current_episode
+        )
+
+        self._task.measurements.update_measures(
+            episode=self.current_episode, action=action, task=self.task
+        )
+
+        self._update_step_stats()
+        return observations
+
     def seed(self, seed: int) -> None:
         self._sim.seed(seed)
         self._task.seed(seed)
@@ -527,18 +558,17 @@ class RLEnv(gym.Env):
 
         return observations, reward, done, info
 
-    #ci_map作成用
-    def step2(self, *args, **kwargs) -> Tuple[Observations, Any, bool, dict]:
+    #viewer video 作成用
+    def step2(self, *args, **kwargs) -> Tuple[Observations, dict]:
         r"""Perform an action in the environment.
 
         :return: :py:`(observations, reward, done, info)`
         """
 
-        reward = self.get_reward2(None, **kwargs)
-        done = self.get_done(None)
+        observations = self._env.step(*args, **kwargs)
         info = self.get_info(None)
 
-        return reward, done, info
+        return observations, info
     
 
     def seed(self, seed: Optional[int] = None) -> None:

@@ -2,9 +2,10 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import pathlib
 
-date = "24-05-16 16-06-47"
+date = "24-06-14 15-28-02"
+date = "24-06-17 21-11-51"
 
-mode = "train2"
+mode = "train3"
 
 df = pd.read_csv(f"log/{date}/{mode}/reward.csv", names=['time', 'reward'], header=None)
 plt.plot(df['time'], df['reward'], color="blue", label="reward")

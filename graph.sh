@@ -10,9 +10,6 @@
 module load openmpi/5.0.2-gcc
 module load cuda/12.1.0 
 
-#apptainer exec --nv ./../ubuntu_latest.sif /gs/fs/tga-aklab/matsumoto/Main/exec.sh
-#apptainer shell --nv ./../ubuntu_latest.sif
-
 pwd
 cd /gs/fs/tga-aklab/matsumoto/Main
 . /home/7/ur02047/anaconda3/etc/profile.d/conda.sh
@@ -24,7 +21,7 @@ python ShowingGraph/ShowingActionGraph.py
 python ShowingGraph/ShowingLossGraph.py
 #python ShowingGraph/ShowingExpAreaGraph.py
 #python ShowingGraph/ShowingExpAreaGraphCompare.py
-#python ShowingGraph/ShowingSimilarityGraph.py
+python ShowingGraph/ShowingSimilarityGraph.py
 #python ShowingGraph/ShowingSimilarityGraphCompare.py
 #python ShowingGraph/ShowingSelectorAccuracyGraph.py
 #python ShowingGraph/ShowingSelectorLossGraph.py

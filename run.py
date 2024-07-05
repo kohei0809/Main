@@ -22,7 +22,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--run-type",
-        choices=["train", "train2", "eval", "eval2", "eval3", "random", "random2"],
+        choices=["train", "train2", "train3", "eval", "eval2", "eval3", "random", "random2", "random3"],
         default=None,
         help="run type of the experiment (train or eval)",
     )
@@ -69,39 +69,38 @@ def test(run_type: str, opts=None):
     
     config = get_config(exp_config)
     
-    if run_type in ["train", "train2"]:
+    if run_type in ["train", "train2", "train3"]:
         datadate = "" 
         config.defrost()
-        config.NUM_PROCESSES = 12
+        config.NUM_PROCESSES = 24
         config.RL.PPO.num_mini_batch = 4
         #config.NUM_PROCESSES = 1
         #config.RL.PPO.num_mini_batch = 1
         config.TORCH_GPU_ID = 0
         config.freeze()
     elif run_type in ["eval", "eval2", "eval3"]:
-        if run_type == "eval2":
-            datadate = "24-05-16 16-06-47"
-            current_ckpt = 300
-        else:
-            datadate = "24-04-26 00-36-56"
-            current_ckpt = 108
-
+        datadate = "24-06-30 03-48-07"
+        current_ckpt = 52
+        datadate = "24-06-30 04-00-12"
+        current_ckpt = 49
 
         config.defrost()
         config.RL.PPO.num_mini_batch = 4
-        config.NUM_PROCESSES = 8
-        #config.RL.PPO.num_mini_batch = 4
-        #config.NUM_PROCESSES = 4
+        config.NUM_PROCESSES = 24
+        #config.RL.PPO.num_mini_batch = 1
+        #config.NUM_PROCESSES = 1
         config.TEST_EPISODE_COUNT = 220
         config.VIDEO_OPTION = ["disk"]
-        config.TORCH_GPU_ID = 1
+        config.TORCH_GPU_ID = 0
         config.freeze()
-    elif run_type=="random" or run_type=="random2":
+    elif run_type in ["random", "random2", "random3"]:
         datadate = "" 
         config.defrost()
         config.TASK_CONFIG.DATASET.SPLIT = "val"
         config.RL.PPO.num_mini_batch = 4
         config.NUM_PROCESSES = 24
+        #config.RL.PPO.num_mini_batch = 1
+        #config.NUM_PROCESSES = 1
         config.TEST_EPISODE_COUNT = 220
         config.VIDEO_OPTION = ["disk"]
         config.TORCH_GPU_ID = 1
@@ -121,7 +120,7 @@ def test(run_type: str, opts=None):
     if agent_type in ["oracle", "oracle-ego", "no-map"]:
         if run_type in ["train2", "eval2", "random2"]:
             trainer_init = baseline_registry.get_trainer("oracle2")
-        elif run_type == "eval3":
+        elif run_type in ["train3", "eval3", "random3"]:
             trainer_init = baseline_registry.get_trainer("oracle3")
         else:
             trainer_init = baseline_registry.get_trainer("oracle")
@@ -159,7 +158,7 @@ def test(run_type: str, opts=None):
     logger.info("-----------------------------------")
 
     try:
-        if run_type in ["train", "train2"]:
+        if run_type in ["train", "train2", "train3"]:
             #フォルダがない場合は、作成
             p_dir = pathlib.Path(config.CHECKPOINT_FOLDER)
             if not p_dir.exists():
@@ -169,7 +168,7 @@ def test(run_type: str, opts=None):
         elif run_type in ["eval", "eval2", "eval3"]:
             trainer.eval(log_manager, start_date, current_ckpt)
         
-        elif run_type in ["random", "random2"]:
+        elif run_type in ["random", "random2", "random3"]:
             trainer.random_eval(log_manager, start_date)
     finally:
         end_date = datetime.datetime.now().strftime('%y-%m-%d %H-%M-%S') 

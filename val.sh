@@ -4,6 +4,7 @@
 #$ -j y
 #$ -l h_rt=10:00:00
 #$ -o output/o.$JOB_ID
+#$ -p -4
 
 . /etc/profile.d/modules.sh
 

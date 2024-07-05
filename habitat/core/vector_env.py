@@ -323,7 +323,10 @@ class VectorEnv:
         r"""Wait until all the asynchronized environments have synchronized.
         """
         observations = []
+        #i = 0
         for read_fn in self._connection_read_fns:
+            #logger.info(f"### {i} ###")
+            #i += 1
             observations.append(read_fn())
         self._is_waiting = False
         return observations

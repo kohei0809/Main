@@ -129,6 +129,7 @@ def generate_pointnav_episode(
 
         for retry in range(number_retries_per_target):
             source_position = sim.sample_navigable_point()
+            source_position = np.array([0.3368 , -2.9887, -3.8117])
 
             is_compatible, dist = is_compatible_episode(
                 source_position,
@@ -141,6 +142,8 @@ def generate_pointnav_episode(
         if is_compatible:
             angle = np.random.uniform(0, 2 * np.pi)
             source_rotation = [0, np.sin(angle / 2), 0, np.cos(angle / 2)]
+            source_rotation = [0, -0.1133, 0, 0.9935]
+            # 1, 2, 3, 0
 
             shortest_paths = None
             if is_gen_shortest_path:

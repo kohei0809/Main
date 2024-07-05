@@ -4,8 +4,6 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 import abc
-import math
-import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -274,7 +272,8 @@ class ProposedNetOracle(Net):
             self.map_encoder = MapCNN(50, 256, agent_type)
             self.occupancy_embedding = nn.Embedding(4, 16)
         
-        self.action_embedding = nn.Embedding(4, previous_action_embedding_size)
+        #self.action_embedding = nn.Embedding(4, previous_action_embedding_size)
+        self.action_embedding = nn.Embedding(3, previous_action_embedding_size)
 
         if self.use_previous_action:
             self.state_encoder = RNNStateEncoder(

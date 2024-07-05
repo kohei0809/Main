@@ -4,15 +4,16 @@ import pathlib
 import numpy as np
 
 #date = "24-04-17 18-45-23"
-date = "24-05-16 16-06-47"
+date = "24-06-14 15-28-02"
+date = "24-06-17 21-11-51"
 #mode = "train"
-mode = "train2"
+mode = "train3"
 
-df = pd.read_csv(f"log/{date}/{mode}/action_prob.csv", names=['time', 'take_picture', 'forward', 'left', 'right', 'look_up', 'look_down'], header=None)
-plt.plot(df['time'], df['take_picture'], color="red", label="Take Picture")
-plt.plot(df['time'], df['forward'], color="blue", label="Move Forward")
-plt.plot(df['time'], df['left'], color="green", label="Turn Left")
-plt.plot(df['time'], df['right'], color="black", label="Turn Right")
+df = pd.read_csv(f"log/{date}/{mode}/action_prob.csv", names=['time', 'forward', 'left', 'right', 'look_up', 'look_down', 'take_picture',], header=None)
+#plt.plot(df['time'], df['take_picture'], color="red", label="Take Picture")
+plt.plot(df['time'], df['forward'], color="red", label="Move Forward")
+plt.plot(df['time'], df['left'], color="blue", label="Turn Left")
+plt.plot(df['time'], df['right'], color="green", label="Turn Right")
 
 #ラベルの追加
 plt.xlabel('Training Steps')

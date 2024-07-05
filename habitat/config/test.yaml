@@ -1,0 +1,46 @@
+BASE_TASK_CONFIG_PATH: "configs/tasks/pointnav_mp3d.yaml"
+#BASE_TASK_CONFIG_PATH: "configs/tasks/multinav_mp3d.yaml"
+SENSORS: ["RGB_SENSOR", "DEPTH_SENSOR", "SEMANTIC_SENSOR"]
+
+DATASET:
+  TYPE: MultiNav-v1
+  SPLIT: train
+  DATA_PATH: "data/datasets/multinav/3_ON/{split}/{split}.json.gz"
+  SCENES_DIR: "data/scene_datasets/"
+  CONTENT_SCENES: ["*"]
+
+TASK_CONFIG:
+  SIMULATOR:
+    #SCENE: "data/scene_datasets/habitat-test-scenes/van-gogh-room.glb"
+    SCENE: "data/scene_datasets/habitat-test-scenes/skokloster-castle.glb"
+    DEFAULT_AGENT_ID: 0
+    TYPE: "Sim-v0"
+
+    AGENT_0:
+      HEIGHT: 1.5
+      RADIUS: 0.1
+      MASS: 32.0
+      LINEAR_ACCELERATION: 20.0
+      ANGULAR_ACCELERATION: 4 * 3.14
+      LINEAR_FRICTION: 0.5
+      ANGULAR_FRICTION: 1.0
+      COEFFICIENT_OF_RESTITUTION: 0.0
+      SENSORS: ["RGB_SENSOR", "DEPTH_SENSOR", "SEMANTIC_SENSOR"]
+      IS_SET_START_STATE: False
+      START_POSITION: [0, 0, 0]
+      START_ROTATION: [0, 0, 0, 1]
+    AGENTS: ["AGENT_0"]
+
+ENVIRONMENT:
+  MAX_EPISODE_STEPS: 1000
+  MAX_EPISODE_SECONDS: 10000000
+  ITERATOR_OPTIONS:
+    CYCLE: True
+    SHUFFLE: True
+    GROUP_BY_SCENE: True
+    NUM_EPISODE_SAMPLE: -1
+    MAX_SCENE_REPEAT_EPISODES: -1
+    MAX_SCENE_REPEAT_STEPS: 10000
+    STEP_REPETITION_RANGE: 0.2
+
+SEED: 200
