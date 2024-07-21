@@ -210,3 +210,4 @@ research_ci_and_similarity/
 llava-v1.5-7b
 map_dataset/*
 model/*
+*.mp4

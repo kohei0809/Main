@@ -436,6 +436,7 @@ class HabitatSim(Simulator):
             True if the set was successful else moves the agent back to its
             original pose and returns false.
         """
+        logger.info(f"####### in set_agent_state rotation={rotation}")
         agent = self._sim.get_agent(agent_id)
         original_state = self.get_agent_state(agent_id)
         new_state = self.get_agent_state(agent_id)

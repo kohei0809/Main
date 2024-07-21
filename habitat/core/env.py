@@ -352,7 +352,7 @@ class Env:
             self.episode_iterator.step_taken()
 
     def step(
-        self, action: Union[int, str, Dict[str, Any]], **kwargs
+        self, action: Union[int, str, Dict[str, Any]], *args, **kwargs
     ) -> Observations:
         r"""Perform an action in the environment and return observations.
 
@@ -374,9 +374,14 @@ class Env:
         if isinstance(action, str) or isinstance(action, (int, np.integer)):
             action = {"action": action}
 
-        observations = self.task.step(
-            action=action, episode=self.current_episode
-        )
+        if action["action"] == "TELEPORT":
+            observations = self.task.step(
+                action=action, episode=self.current_episode, position=args[0], rotation=args[1]
+            )
+        else:
+            observations = self.task.step(
+                action=action, episode=self.current_episode
+            )
 
         self._task.measurements.update_measures(
             episode=self.current_episode, action=action, task=self.task
@@ -396,13 +401,6 @@ class Env:
             patch = patch[currPix[0]-40:currPix[0]+40, currPix[1]-40:currPix[1]+40,:]
             patch = ndimage.interpolation.rotate(patch, -(observations["heading"][0] * 180/np.pi) + 90, order=0, reshape=False)
             observations["semMap"] = patch[40-25:40+25, 40-25:40+25, :]
-
-            """
-            patch_ = self.create_egocentric_map(patch, currPix, 70)
-            patch = ndimage.interpolation.rotate(patch_, -(observations["heading"][0] * 180/np.pi) + 90, order=0, reshape=False)
-            observations["semMap_mini"] = self.resize_semMap(patch_[70-25:70+25, 70-25:70+25, :], 50, 100)
-            observations["semMap_big"] = patch_[70-50:70+50, 70-50:70+50, :]
-            """
 
         self._update_step_stats()
         return observations
@@ -564,8 +562,12 @@ class RLEnv(gym.Env):
 
         :return: :py:`(observations, reward, done, info)`
         """
-
-        observations = self._env.step(*args, **kwargs)
+        a = args[0]
+        #logger.info(f"args={args}, [0]={a}")
+        if args[0] == 'TELEPORT':
+            observations = self._env.step(args[0], args[1], args[2])
+        else:
+            observations = self._env.step(*args, **kwargs)
         info = self.get_info(None)
 
         return observations, info

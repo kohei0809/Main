@@ -294,7 +294,7 @@ class EmbodiedTask:
 
         return observations
 
-    def step(self, action: Union[int, Dict[str, Any]], episode: Type[Episode]):
+    def step(self, action: Union[int, Dict[str, Any]], episode: Type[Episode], position=None, rotation=None):
         if "action_args" not in action or action["action_args"] is None:
             action["action_args"] = {}
         action_name = action["action"]
@@ -305,9 +305,14 @@ class EmbodiedTask:
         ), f"Can't find '{action_name}' action in {self.actions.keys()}."
 
         task_action = self.actions[action_name]
-        observations = task_action.step(
-            self, **action["action_args"], task=self
-        )
+        if action["action"] == "TELEPORT":
+            observations = task_action.step(
+                self, **action["action_args"], position=position, rotation=rotation
+            )
+        else:
+            observations = task_action.step(
+                self, **action["action_args"], task=self
+            )
         observations.update(
             self.sensor_suite.get_observations(
                 observations=observations,

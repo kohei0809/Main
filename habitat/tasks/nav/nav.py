@@ -1542,6 +1542,9 @@ class NewTopDownMap(Measure):
             self._num_samples,
             self._config.DRAW_BORDER,
         )
+        #logger.info("##### in get_original_map ########")
+        #logger.info(top_down_map)
+        #logger.info(top_down_map.shape)
 
         range_x = np.where(np.any(top_down_map, axis=1))[0]
         range_y = np.where(np.any(top_down_map, axis=0))[0]
@@ -1630,7 +1633,10 @@ class NewTopDownMap(Measure):
                 self._ind_y_max
             ) = self.z_dict[agent_position[1]]
         else:
-            self.__top_down_map = self.get_original_map(agent_position[1])
+            self._top_down_map = self.get_original_map(agent_position[1])
+        #logger.info("####### in nav.py #########")
+        #logger.info(self._top_down_map)
+        #logger.info(self._top_down_map.shape)
         a_x, a_y = maps.to_grid(
             agent_position[0],
             agent_position[2],
@@ -2530,17 +2536,6 @@ class MoveForwardAction(SimulatorTaskAction):
         task.is_found_called = False ##C
         return self._sim.step(HabitatSimActions.MOVE_FORWARD)
 
-@registry.register_task_action
-class MoveBackwardAction(SimulatorTaskAction):
-    name: str = "MOVE_BACKWARD"
-
-    def step(self, *args: Any, task: EmbodiedTask, **kwargs: Any):
-        r"""Update ``_metric``, this method is called from ``Env`` on each
-        ``step``.
-        """
-        task.is_found_called = False ##C
-        return self._sim.step(HabitatSimActions.MOVE_BACKWARD)
-
 
 @registry.register_task_action
 class TurnLeftAction(SimulatorTaskAction):
@@ -2560,18 +2555,6 @@ class TurnRightAction(SimulatorTaskAction):
         """
         task.is_found_called = False ##C
         return self._sim.step(HabitatSimActions.TURN_RIGHT)
-
-
-@registry.register_task_action
-class MoveBackwardAction(SimulatorTaskAction):
-    name: str = "MOVEBACKWARD"
-
-    def step(self, *args: Any, task: EmbodiedTask, **kwargs: Any):
-        r"""Update ``_metric``, this method is called from ``Env`` on each
-        ``step``.
-        """
-        task.is_found_called = False ##C
-        return self._sim.step(HabitatSimActions.MOVEBACKWARD)
 
 
 @registry.register_task_action
@@ -2682,6 +2665,8 @@ class TeleportAction(SimulatorTaskAction):
         r"""Update ``_metric``, this method is called from ``Env`` on each
         ``step``.
         """
+
+        logger.info(f"####### position={position}, rotation={rotation} ##########")
 
         if not isinstance(rotation, list):
             rotation = list(rotation)

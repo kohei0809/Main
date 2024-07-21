@@ -200,6 +200,7 @@ def generate_video2(
     video_dir: Optional[str],
     images: List[np.ndarray],
     fps: int = 100,
+    video_name: str = "video",
 ) -> None:
     r"""Generate video according to specified information.
 
@@ -212,8 +213,6 @@ def generate_video2(
     """
     if len(images) < 1:
         return
-
-    video_name = f"video"
     
     images_to_video(images, video_dir, video_name, fps)
 
