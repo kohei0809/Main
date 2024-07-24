@@ -72,7 +72,20 @@ class CategoricalNet(nn.Module):
         nn.init.constant_(self.linear.bias, 0)
 
     def forward(self, x: Tensor) -> CustomFixedCategorical:
+        pre_x = x
         x = self.linear(x)
+        #logger.info(x)
+
+        # 0行目が全てnanであるかを判定
+        is_nan_row = torch.isnan(x).all(dim=1)
+
+        # 0行目が全てnanである場合、他の行をコピーした値にする
+        for i in range(x.size(0)):
+            if is_nan_row[i]:
+                logger.info("######## nan error #######")
+                logger.info(pre_x)
+                logger.info(x)
+                x[i] = x[~is_nan_row][0]
         return CustomFixedCategorical(logits=x)
 
 

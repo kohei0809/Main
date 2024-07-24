@@ -33,7 +33,7 @@ from habitat import Config, VectorEnv, logger
 from habitat.utils import profiling_wrapper
 from habitat.utils.env_utils import construct_envs
 from habitat.utils.render_wrapper import overlay_frame
-from habitat.utils.visualizations.utils import observations_to_image
+from habitat.utils.visualizations.utils import observations_to_image, explored_to_image
 from habitat_baselines.common.base_trainer import BaseRLTrainerOracle
 from habitat_baselines.common.baseline_registry import baseline_registry
 from habitat.core.environments import get_env_class
@@ -534,10 +534,12 @@ class PPOTrainerO(BaseRLTrainerOracle):
         )
 
         t_step_env = time.time()
+        #logger.info("######## before output ###########")
         outputs = [
             self.envs.wait_step_at(index_env)
             for index_env in range(env_slice.start, env_slice.stop)
         ]
+        #logger.info("######## after output ###########")
 
         observations, rewards, dones, infos = [
             list(x) for x in zip(*outputs)
@@ -573,7 +575,7 @@ class PPOTrainerO(BaseRLTrainerOracle):
         for n in range(len(observations)):
             if len(self._taken_picture_list[n]) == 0:
                 self._load_subgoal_list(current_episodes, n, rewards[n][5])
-            self._taken_picture_list[n].append([pic_val[n], observations[n]["rgb"]])
+            self._taken_picture_list[n].append([pic_val[n], observations[n]["rgb"], rewards[n][6], rewards[n][7]])
             subgoal_reward[n] = self._calculate_subgoal_reward(semantic_obs[n], n)
             reward[n] += subgoal_reward[n]
 
@@ -594,17 +596,24 @@ class PPOTrainerO(BaseRLTrainerOracle):
 
         # episode ended
         for n in range(len(observations)):
-            if done_masks[n].item() == True:    
+            if done_masks[n].item() == True:   
+                # tannsakuzumino kannkyouno syasinnwo syutoku
+                explored_picture, start_position = self.get_explored_picture(infos[n]["explored_map"])
+                explored_picture = explored_to_image(explored_picture, infos[n])
+                explored_picture = Image.fromarray(np.uint8(explored_picture))
+
                 # 写真の選別
                 self._taken_picture_list[n], picture_value[n] = self._select_pictures(self._taken_picture_list[n])
-                results_image = self._create_results_image(self._taken_picture_list[n])
+                results_image = None
+                results_image, positions_x, positions_y = self._create_results_image(self._taken_picture_list[n], explored_picture)
 
                 # Ground-Truth descriptionと生成文との類似度の計算 
                 description = self.description_df[self.description_df["scene_id"]==current_episodes[n].scene_id[-15:-4]]["description"].item()
-                #pred_description = self.create_description(self._taken_picture_list[n])
+                pred_description = self.create_description(self._taken_picture_list[n])
                 pred_description = ""
                 if results_image is not None:
-                    pred_description = self.create_description_from_results_image(results_image)
+                    pred_description, location_input = self.create_description_from_results_image(results_image, start_position, positions_x, positions_y)
+                
                 similarity[n] = self.calculate_similarity(pred_description, description)
                 pic_sim[n] = self._calculate_pic_sim(self._taken_picture_list[n])                
                 reward[n] += similarity[n]*10
@@ -1001,7 +1010,8 @@ class PPOTrainerO(BaseRLTrainerOracle):
             self._training_log(losses, prev_time)
 
             # checkpoint model
-            if rank0_only() and self.should_checkpoint():
+            #if rank0_only() and self.should_checkpoint():
+            if rank0_only():
                 self.save_checkpoint(
                     f"ckpt.{count_checkpoints}.pth",
                     dict(
@@ -1171,14 +1181,19 @@ class PPOTrainerO(BaseRLTrainerOracle):
         return True
 
 
-    def _create_results_image(self, picture_list):
+    def _create_results_image(self, picture_list, explored_picture):
         images = []
+        x_list = []
+        y_list = []
+    
         if len(picture_list) == 0:
             return None
 
         for i in range(self._num_picture):
             idx = i%len(picture_list)
             images.append(Image.fromarray(picture_list[idx][1]))
+            x_list.append(picture_list[idx][2])
+            y_list.append(picture_list[idx][3])
 
         width, height = images[0].size
         result_width = width * 5
@@ -1196,14 +1211,70 @@ class PPOTrainerO(BaseRLTrainerOracle):
         for y in range(height, result_height, height):
             draw.line([(0, y), (result_width, y)], fill="black", width=7)
 
-        return result_image
+        # explored_pictureの新しい横幅を計算
+        if explored_picture.height != 0:
+            aspect_ratio = explored_picture.width / explored_picture.height
+        else:
+            aspect_ratio = explored_picture.width
+        new_explored_picture_width = int(result_height * aspect_ratio)
+
+        # explored_pictureをリサイズ
+        explored_picture = explored_picture.resize((new_explored_picture_width, result_height))
+
+        # 最終画像の幅を計算
+        final_width = result_width + new_explored_picture_width
+
+        # 最終画像を作成
+        final_image = Image.new('RGB', (final_width, result_height), color=(255, 255, 255))
+
+        # result_imageを貼り付け
+        final_image.paste(result_image, (0, 0))
+
+        # リサイズしたexplored_pictureを貼り付け
+        final_image.paste(explored_picture, (result_width, 0))
+
+        return final_image, x_list, y_list
 
 
-    def create_description_from_results_image(self, results_image):
-        input_text = "You are an excellent property writer. This picture consists of 10 pictures arranged in one picture, 5 horizontally and 2 vertically on one building. In addition, a black line separates the pictures from each other. From each picture, you should understand the details of this building's environment and describe this building's environment in detail in the form of a summary of these pictures. At this point, do not describe each picture one at a time, but rather in a summarized form. Also note that each picture was taken in a separate location, so successive pictures are not positionally close. Additionally, do not mention which picture you are quoting from or the black line separating each picture."
+    def create_description_from_results_image(self, results_image, start_position, x_list, y_list, input_change=False):
+        blue_x, blue_y = start_position
+        red_x = blue_x + 1.0
+        red_y = blue_y + 1.0
+        input_text_1 = "<Instructions>\n"\
+                        "You are an excellent property writer.\n"\
+                        "The picture you have entered consists of 10 pictures of a building, 5 horizontally and 2 vertically placed in a single picture, with a map drawing of the building to the right of the pictures.\n"\
+                        "Each picture is also separated by a black line.\n"\
+                        "From each picture, understand the details of this building's environment, and in the form of a summary of these pictures, describe this building's environment in detail, paying attention to the <Notes>.\n"\
+                        "In doing so, please also consider the location of each picture as indicated by <Location Information>.\n"\
+                        "\n\n"\
+                        "<Location Information>\n"\
+                        "The top leftmost picture is picture_1, and from its right to left are picture_2, picture_3, picture_4, and picture_5.\n"\
+                        "Similarly, the bottom-left corner is picture_6, and from its right, picture_7, picture_8, picture_9, and picture_10.\n"\
+                        "The following is the location information for each picture.\n\n"
+        input_text_2 = "<Notes>\n"\
+                        "・Note that each picture is taken at the location indicated by <Location Information>, and that adjacent pictures are not close in location.\n"\
+                        f"・In the map diagram on the right, there is a blue dot and a red dot. The coordinates of the blue point are ({blue_x}, {blue_y}), and the coordinates of the red point are ({red_x}, {red_y}), so please use this as a reference to output the location information for each picture from <Location Information>.\n"\
+                        "・When describing the environment, do not mention whether it was taken from that picture or the black line separating each picture.\n"\
+                        "・Only refer to the structure of the description from <Example of output>, and do not use your imagination to describe things not shown in the picture.\n"\
+                        "\n\n"\
+                        "<Example of output>\n"\
+                        "This building features a spacious layout with multiple living rooms, bedrooms, and bathrooms. A living space with a fireplace is next to a fully equipped kitchen. There are also three bedrooms on the left side of the building, with a bathroom nearby. There are plenty of books to work with.\n"\
+                        "Overall, the apartment is spacious and well-equipped, with many paintings on the walls."
+        
+        location_input = ""
+        for i in range(self._num_picture):
+            idx = i+1
+            location_input += "picture_"+str(idx)+" : ("+str(x_list[i])+", "+str(y_list[i])+")\n"
+        location_input+="\n"
+        input_text = input_text_1 + location_input + input_text_2
+        #logger.info("############## input_text ###############")
+        #logger.info(input_text)
+        if input_change == True:
+            logger.info("############## Input Change ################")
+            input_text = "You are an excellent property writer. This picture consists of 10 pictures arranged in one picture, 5 horizontally and 2 vertically on one building. In addition, a black line separates the pictures from each other. From each picture, you should understand the details of this building's environment and describe this building's environment in detail in the form of a summary of these pictures. At this point, do not describe each picture one at a time, but rather in a summarized form. Also note that each picture was taken in a separate location, so successive pictures are not positionally close. Additionally, do not mention which picture you are quoting from or the black line separating each picture."
         response = self.generate_response(results_image, input_text)
         response = response[4:-4]
-        return response
+        return response, location_input
 
 
     def generate_response(self, image, input_text):
@@ -1256,6 +1327,38 @@ class PPOTrainerO(BaseRLTrainerOracle):
         conv.messages[-1][-1] = outputs
         outputs = outputs.replace("\n\n", " ")
         return outputs
+
+
+    def get_explored_picture(self, infos):
+        explored_map = infos["map"]
+        fog_of_war_map = infos["fog_of_war_mask"]
+        start_position = infos["start_position"]
+        y, x = explored_map.shape
+
+        for i in range(y):
+            for j in range(x):
+                if fog_of_war_map[i][j] == 1:
+                    if explored_map[i][j] == maps.MAP_VALID_POINT:
+                        explored_map[i][j] = maps.MAP_INVALID_POINT
+                else:
+                    if explored_map[i][j] in [maps.MAP_VALID_POINT, maps.MAP_INVALID_POINT]:
+                        explored_map[i][j] = maps.MAP_BORDER_INDICATOR
+
+        range_x = np.where(~np.all(explored_map == maps.MAP_BORDER_INDICATOR, axis=1))[0]
+        range_y = np.where(~np.all(explored_map == maps.MAP_BORDER_INDICATOR, axis=0))[0]
+
+        _ind_x_min = range_x[0]
+        _ind_x_max = range_x[-1]
+        _ind_y_min = range_y[0]
+        _ind_y_max = range_y[-1]
+        _grid_delta = 3
+
+        explored_map = explored_map[
+            _ind_x_min - _grid_delta : _ind_x_max + _grid_delta,
+            _ind_y_min - _grid_delta : _ind_y_max + _grid_delta,
+        ]
+            
+        return explored_map, start_position
 
 
     def _eval_checkpoint(

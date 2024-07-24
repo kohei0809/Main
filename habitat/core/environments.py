@@ -59,6 +59,7 @@ class NavRLEnv(habitat.RLEnv):
         return observations
 
     def step(self, *args, **kwargs):
+        #logger.info("######## step in NavRLEnv ##########")
         return super().step(*args, **kwargs)
 
     def get_reward_range(self):
@@ -181,31 +182,42 @@ class InfoRLEnv(RLEnv):
         return rate
 
     def get_reward(self, observations, **kwargs):
+        #logger.info("###### get_reward 1 in InfoRLEnv #########")
         reward = self._rl_config.SLACK_REWARD
         ci = -1000
         picture_value = -1
-        
-        # area_rewardの計算
         info = self.get_info(observations)
-        _top_down_map = info["top_down_map"]["map"]
-        _fog_of_war_map = info["top_down_map"]["fog_of_war_mask"]
+        #logger.info("###### get_reward 2 in NvRLEnv #########")
+
+        if "smooth_map_value" in info:
+            #logger.info("###### get_reward 3 in NvRLEnv #########")
+            smooth_current_area = info["smooth_map_value"]
+            area_reward = smooth_current_area / 50      
+            output = 0.0
+            reward += area_reward
+            #logger.info(f"smooth_current_area={smooth_current_area}, smooth_value={smooth_value}")
+        else:
+            # area_rewardの計算
+            _top_down_map = info["top_down_map"]["map"]
+            _fog_of_war_map = info["top_down_map"]["fog_of_war_mask"]
+
+            current_area = self._cal_explored_rate(_top_down_map, _fog_of_war_map)
+            current_area *= 10
+            # area_rewardを足す
+            area_reward = current_area - self._previous_area
+            reward += area_reward
+            output = 0.0
+            self._previous_area = current_area
         
-        current_area = self._cal_explored_rate(_top_down_map, _fog_of_war_map)
-        current_area *= 10
+        #logger.info("###### get_reward 4 in NvRLEnv #########")
+        measure = self._env.get_metrics()[self._picture_measure_name]
+        picture_value = measure
 
-        if self._take_picture():
-            measure = self._env.get_metrics()[self._picture_measure_name]
-            #ci, matrics = measure[0], measure[1]
-            #ci = 0.0
-            picture_value = measure
-            
-        # area_rewardを足す
-        area_reward = current_area - self._previous_area
-        reward += area_reward
-        output = self._previous_area
-        self._previous_area = current_area
+        agent_position = self._env._sim.get_agent_state().position
 
-        return reward, picture_value, current_area, output, self._take_picture(), self._scene_data
+        #logger.info("###### get_reward 5 in NvRLEnv #########")
+        return reward, picture_value, area_reward, output, self._take_picture(), self._scene_data, agent_position[0], agent_position[2]
+
     
     def get_reward2(self, observations, **kwargs):
         reward = self._rl_config.SLACK_REWARD

@@ -625,8 +625,10 @@ class Saliency(Measure):
         self.update_metric(*args, episode=episode, task=task, **kwargs)
     
     def update_metric(self, *args: Any, episode, task: EmbodiedTask, **kwargs: Any):
+        #logger.info("###### update_metric 1 in Saliency #########")
         take_picture = task.measurements.measures[Picture.cls_uuid].get_metric()
         
+        #logger.info("###### update_metric 2 in Saliency #########")
         observation = self._sim.get_observations_at()
         
         if take_picture:
@@ -648,22 +650,29 @@ class Saliency(Measure):
         return semantic_obs
 
     def _cal_picture_value(self, obs):
+        #logger.info("###### _cal_picture_value 1 in Saliency #########")
         rgb_obs = obs["rgb"]
         img = preprocess_img(image=rgb_obs) # padding and resizing input image into 384x288
         img = np.array(img)/255.
         img = np.expand_dims(np.transpose(img,(2,0,1)),axis=0)
         img = torch.from_numpy(img)
+        #logger.info("###### _cal_picture_value 2 in Saliency #########")
     
         if torch.cuda.is_available():
             img = img.type(torch.cuda.FloatTensor).to(self.device)
         else:
             img = img.type(torch.FloatTensor).to(self.device)
         
+        #logger.info("###### _cal_picture_value 3 in Saliency #########")
         raw_saliency, pred_saliency = self.transalnet_model(img)
+        #logger.info("###### _cal_picture_value 4 in Saliency #########")
         toPIL = transforms.ToPILImage()
+        #logger.info("###### _cal_picture_value 5 in Saliency #########")
         pic = toPIL(pred_saliency.squeeze())
 
+        #logger.info("###### _cal_picture_value 6 in Saliency #########")
         pred_saliency = postprocess_img(pic, org_image=rgb_obs)
+        #logger.info("###### _cal_picture_value 7 in Saliency #########")
         
         # 0を削除
         non_zero_pred_saliency = pred_saliency[pred_saliency != 0]
@@ -685,10 +694,11 @@ class Saliency(Measure):
             obs_shape = H*W
             num_category = 0
             for i in range(40):
-                if category_num[i] >= obs_shape*0.05:
+                if category_num[i] > 0:
                     num_category += 1
 
             picture_value = count_sal * num_category
+            #logger.info("###### _cal_picture_value 8 in Saliency #########")
             
             return picture_value
             #return self._count_saliency_regions(pred_saliency)
@@ -1223,10 +1233,12 @@ class TopDownMap(Measure):
             )
 
     def update_metric(self, episode, action, *args: Any, **kwargs: Any):
+        #logger.info("###### update_metric 1 in TopDownMap #########")
         self._step_count += 1
         house_map, map_agent_x, map_agent_y = self.update_map(
             self._sim.get_agent_state().position
         )
+        #logger.info("###### update_metric 2 in TopDownMap #########")
 
         self._metric = {
             "map": house_map,
@@ -1290,6 +1302,263 @@ class TopDownMap(Measure):
 
 
 @registry.register_measure
+class ExploredMap(Measure):
+    r"""Explored Map measure"""
+
+    def __init__(
+        self, *args: Any, sim: Simulator, config: Config, **kwargs: Any
+    ):
+        self._sim = sim
+        self._config = config
+        self._grid_delta = config.MAP_PADDING
+        self._step_count = None
+        self._map_resolution = config.MAP_RESOLUTION
+        self._num_samples = config.NUM_TOPDOWN_MAP_SAMPLE_POINTS
+        self._ind_x_min = None
+        self._ind_x_max = None
+        self._ind_y_min = None
+        self._ind_y_max = None
+        self._previous_xy_location = None
+        self._top_down_map = None
+        self.point_padding = 2 * int(
+            np.ceil(self._map_resolution / MAP_THICKNESS_SCALAR)
+        )
+        super().__init__()
+
+    def _get_uuid(self, *args: Any, **kwargs: Any):
+        return "explored_map"
+
+
+    def get_original_map(self):
+        top_down_map = maps.get_topdown_map_from_sim(
+            self._sim,
+            map_resolution=self._map_resolution,
+            draw_border=self._config.DRAW_BORDER,
+        )
+
+        range_x = np.where(np.any(top_down_map, axis=1))[0]
+        range_y = np.where(np.any(top_down_map, axis=0))[0]
+
+        self._ind_x_min = range_x[0]
+        self._ind_x_max = range_x[-1]
+        self._ind_y_min = range_y[0]
+        self._ind_y_max = range_y[-1]
+
+        if self._config.FOG_OF_WAR.DRAW:
+            self._fog_of_war_mask = np.zeros_like(top_down_map)
+
+        return top_down_map
+
+    def _draw_point(self, position, point_type):
+        t_x, t_y = maps.to_grid(
+            position[2],
+            position[0],
+            (self._top_down_map.shape[0], self._top_down_map.shape[1]),
+            sim=self._sim,
+        )
+        self._top_down_map[
+            t_x - self.point_padding : t_x + self.point_padding + 1,
+            t_y - self.point_padding : t_y + self.point_padding + 1,
+        ] = point_type
+
+        if self._ind_x_min > t_x - self.point_padding:
+           self._ind_x_min = t_x - self.point_padding 
+        if self._ind_x_max < t_x + self.point_padding:
+           self._ind_x_max = t_x + self.point_padding 
+        if self._ind_y_min > t_y - self.point_padding:
+           self._ind_y_min = t_y - self.point_padding 
+        if self._ind_y_max > t_y + self.point_padding:
+           self._ind_y_max = t_y + self.point_padding 
+
+
+    def _draw_goals_positions(self, position):
+        try:
+            self._draw_point(
+                position, maps.MAP_TARGET_POINT_INDICATOR
+            )
+        except AttributeError:
+            pass
+
+
+    def reset_metric(self, *args: Any, episode, **kwargs: Any):
+        self._step_count = 0
+        self._metric = None
+        self._top_down_map = self.get_original_map()
+        agent_position = self._sim.get_agent_state().position
+        a_x, a_y = maps.to_grid(
+            agent_position[2],
+            agent_position[0],
+            (self._top_down_map.shape[0], self._top_down_map.shape[1]),
+            sim=self._sim,
+        )
+
+        self.start_position_x = agent_position[0]
+        self.start_position_y = agent_position[2]
+        self.start_grid_x = a_x
+        self.start_grid_y = a_y
+
+        self._previous_xy_location = (a_y, a_x)
+
+        self.update_fog_of_war_mask(np.array([a_x, a_y]))
+
+        # draw source and target parts last to avoid overlap
+        self._draw_goals_positions((episode.start_position[0]+1.0, episode.start_position[1], episode.start_position[2]+1.0))
+
+        if self._config.DRAW_SOURCE:
+            self._draw_point(
+                episode.start_position, maps.MAP_SOURCE_POINT_INDICATOR
+            )
+            
+        self.update_metric(None, None)
+
+    def _clip_map(self, _map):
+        return _map[
+            self._ind_x_min
+            - self._grid_delta : self._ind_x_max
+            + self._grid_delta,
+            self._ind_y_min
+            - self._grid_delta : self._ind_y_max
+            + self._grid_delta,
+        ]
+
+    def update_metric(self, episode, action, *args: Any, **kwargs: Any):
+        #logger.info("###### update_metric 1 in ExploredMap #########")
+        self._step_count += 1
+        house_map, map_agent_x, map_agent_y = self.update_map(
+            self._sim.get_agent_state().position
+        )
+        #logger.info("###### update_metric 2 in ExploredMap #########")
+
+        # Rather than return the whole map which may have large empty regions,
+        # only return the occupied part (plus some padding).
+        #clipped_house_map = self._clip_map(house_map)
+        clipped_house_map = house_map
+
+        clipped_fog_of_war_map = None
+        if self._config.FOG_OF_WAR.DRAW:
+            #clipped_fog_of_war_map = self._clip_map(self._fog_of_war_mask)
+            #logger.info("###### update_metric 3 in ExploredMap #########")
+            clipped_fog_of_war_map= self._fog_of_war_mask
+
+        #logger.info("###### update_metric 4 in ExploredMap #########")
+        self._metric = {
+            "map": clipped_house_map,
+            "fog_of_war_mask": clipped_fog_of_war_map,
+            "start_position": (self.start_position_x, self.start_position_y),
+        }
+
+    def get_polar_angle(self):
+        agent_state = self._sim.get_agent_state()
+        # quaternion is in x, y, z, w format
+        ref_rotation = agent_state.rotation
+
+        heading_vector = quaternion_rotate_vector(
+            ref_rotation.inverse(), np.array([0, 0, -1])
+        )
+
+        phi = cartesian_to_polar(-heading_vector[2], heading_vector[0])[1]
+        x_y_flip = -np.pi / 2
+        return np.array(phi) + x_y_flip
+
+    def update_map(self, agent_position):
+        a_x, a_y = maps.to_grid(
+            agent_position[2],
+            agent_position[0],
+            (self._top_down_map.shape[0], self._top_down_map.shape[1]),
+            sim=self._sim,
+        )
+
+        self.update_fog_of_war_mask(np.array([a_x, a_y]))
+
+        self._previous_xy_location = (a_y, a_x)
+        return self._top_down_map, a_x, a_y
+
+    def update_fog_of_war_mask(self, agent_position):
+        if self._config.FOG_OF_WAR.DRAW:
+            self._fog_of_war_mask = fog_of_war.reveal_fog_of_war(
+                self._top_down_map,
+                self._fog_of_war_mask,
+                agent_position,
+                self.get_polar_angle(),
+                fov=self._config.FOG_OF_WAR.FOV,
+                max_line_len=self._config.FOG_OF_WAR.VISIBILITY_DIST
+                / maps.calculate_meters_per_pixel(
+                    self._map_resolution, sim=self._sim
+                ),
+            )
+
+
+@registry.register_measure
+class SmoothMapValue(Measure):
+    r"""Smooth Map Value measure"""
+
+    def __init__(
+        self, *args: Any, sim: Simulator, config: Config, **kwargs: Any
+    ):
+        self._sim = sim
+        self._config = config
+        self._map_resolution = config.MAP_RESOLUTION
+        self._num_samples = config.NUM_TOPDOWN_MAP_SAMPLE_POINTS
+        self._top_down_map = None
+        super().__init__()
+        #self.log_manager = LogManager()
+        #self.log_manager.setLogDirectory("./smooth_value")
+        self.log_index = 0
+
+    def _get_uuid(self, *args: Any, **kwargs: Any):
+        return "smooth_map_value"
+
+
+    def get_original_map(self):
+        top_down_map = maps.get_topdown_map_from_sim(
+            self._sim,
+            map_resolution=self._map_resolution,
+            draw_border=self._config.DRAW_BORDER,
+        )
+
+        self._top_down_map = np.zeros(top_down_map.shape)
+        #logger.info(f"########## TopDown Map Shape={self._top_down_map.shape}")
+
+
+    def reset_metric(self, *args: Any, episode, **kwargs: Any):
+        self._metric = None
+        self.get_original_map()
+            
+        self.update_metric(None, None)
+
+
+    def update_metric(self, episode, action, *args: Any, **kwargs: Any):
+        agent_position = self._sim.get_agent_state().position
+        a_x, a_y = maps.to_grid(
+            agent_position[2],
+            agent_position[0],
+            (self._top_down_map.shape[0], self._top_down_map.shape[1]),
+            sim=self._sim,
+        )
+        """
+        self.log_writer = self.log_manager.createLogWriter(f"smooth_value_{self.log_index}")
+        self.log_index += 1
+        for i in range(self._top_down_map.shape[0]):
+            for j in range(self._top_down_map.shape[1]):
+                self.log_writer.write(str(self._top_down_map[i][j]))
+            self.log_writer.writeLine()
+        """
+
+        self._top_down_map[a_x, a_y] += 1
+
+        explored_map = self._top_down_map[self._top_down_map != 0]
+        
+        # 各要素の平方の逆数を計算
+        inverse_squares = 1 / np.square(explored_map)
+    
+        # 逆数の合計を計算
+        result = np.sum(inverse_squares)
+        explored_size = explored_map.size
+        #logger.info(f"########## explored_size = {explored_size} ############")
+        self._metric = result / explored_size
+
+
+@registry.register_measure
 class PictureRangeMap(Measure):
     r"""Picture Range Map measure
     """
@@ -1301,7 +1570,7 @@ class PictureRangeMap(Measure):
         self._config = config
         self._grid_delta = config.MAP_PADDING
         self._step_count = None
-        self._map_resolution = (config.MAP_RESOLUTION, config.MAP_RESOLUTION)
+        self._map_resolution = config.MAP_RESOLUTION
         self._num_samples = config.NUM_TOPDOWN_MAP_SAMPLE_POINTS
         self._ind_x_min = None
         self._ind_x_max = None
@@ -1312,10 +1581,10 @@ class PictureRangeMap(Measure):
         self._shortest_path_points = None
         
         self.line_thickness = int(
-            np.round(self._map_resolution[0] * 2 / MAP_THICKNESS_SCALAR)
+            np.round(self._map_resolution * 2 / MAP_THICKNESS_SCALAR)
         )
         self.point_padding = 2 * int(
-            np.ceil(self._map_resolution[0] / MAP_THICKNESS_SCALAR)
+            np.ceil(self._map_resolution / MAP_THICKNESS_SCALAR)
         )
         super().__init__()
 
@@ -1412,9 +1681,8 @@ class PictureRangeMap(Measure):
                         maps.to_grid(
                             p[2],
                             p[0],
-                            self._coordinate_min,
-                            self._coordinate_max,
-                            self._map_resolution,
+                            (self._top_down_map.shape[0], self._top_down_map.shape[1]),
+                            sim=self._sim,
                         )
                         for p in corners
                     ]

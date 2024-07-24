@@ -408,6 +408,7 @@ class VectorEnv:
 
     @profiling_wrapper.RangeContext("wait_step_at")
     def wait_step_at(self, index_env: int) -> Any:
+        #logger.info("###### wait_step_at in VectorEnv ########")
         return self._connection_read_fns[index_env]()
 
     def step_at(self, index_env: int, action: Union[int, str, Dict[str, Any]]):

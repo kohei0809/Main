@@ -263,6 +263,17 @@ def observations_to_image(observation: Dict, info: Dict) -> np.ndarray:
     return render_frame
 
 
+def explored_to_image(explored_map, info: Dict) -> np.ndarray:
+    explored_map = maps.colorize_explored_map(
+        explored_map, info["explored_map"]["fog_of_war_mask"]
+    )
+        
+    if explored_map.shape[0] > explored_map.shape[1]:
+        explored_map = np.rot90(explored_map, 1)
+
+    return explored_map
+
+
 def append_text_to_image(image: np.ndarray, text: str):
     r"""Appends text underneath an image of size (height, width, channels).
     The returned image has white text on a black background. Uses textwrap to

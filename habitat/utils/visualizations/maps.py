@@ -383,6 +383,15 @@ def colorize_topdown_map(
     return _map
 
 
+def colorize_explored_map(
+    explored_map: np.ndarray,
+    fog_of_war_mask: Optional[np.ndarray] = None,
+    fog_of_war_desat_amount: float = 0.5,
+) -> np.ndarray:
+    _map = TOP_DOWN_MAP_COLORS[explored_map]
+    return _map
+
+
 def draw_path(
     top_down_map: np.ndarray,
     path_points: Sequence[Tuple],
