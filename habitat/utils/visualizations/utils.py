@@ -299,6 +299,42 @@ def observations_to_image(observation: Dict, info: Dict, action: np.ndarray=None
     return frame
 
 
+def create_each_image(rgb, explored_map, fog_of_war_map, infos, clip_parameter) -> np.ndarray:
+    observation_size = rgb.shape[0]
+    if not isinstance(rgb, np.ndarray):
+        rgb = rgb.cpu().numpy()
+
+    egocentric_view = rgb
+
+    explored_map = maps.colorize_explored_map(
+        explored_map, fog_of_war_map
+    )
+    map_agent_pos = infos["agent_map_coord"]
+    explored_map = maps.draw_agent(
+        image=explored_map,
+        agent_center_coord=map_agent_pos,
+        agent_rotation=infos["agent_angle"],
+        agent_radius_px=explored_map.shape[0] // 16,
+    )
+
+    explored_map = explored_map[
+        clip_parameter[0] - clip_parameter[4] : clip_parameter[1] + clip_parameter[4],
+        clip_parameter[2] - clip_parameter[4] : clip_parameter[3] + clip_parameter[4],
+    ]
+
+    if explored_map.shape[0] > explored_map.shape[1]:
+        explored_map = np.rot90(explored_map, 1)
+
+    # cv2 resize (dsize is width first)
+    explored_map = cv2.resize(
+        explored_map,
+        (2*observation_size, observation_size),
+        interpolation=cv2.INTER_CUBIC,
+    )
+    frame = np.concatenate((egocentric_view, explored_map), axis=1)
+    return frame
+
+
 def explored_to_image(explored_map, info: Dict) -> np.ndarray:
     explored_map = maps.colorize_explored_map(
         explored_map, info["explored_map"]["fog_of_war_mask"]

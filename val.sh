@@ -17,4 +17,4 @@ pwd
 . /home/7/ur02047/anaconda3/etc/profile.d/conda.sh
 conda activate habitat2
 
-CUDA_LAUNCH_BLOCKING=1 python run.py --run-type eval2
+CUDA_LAUNCH_BLOCKING=1 python run.py --run-type eval3

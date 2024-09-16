@@ -18,7 +18,7 @@ conda activate habitat2
 python ShowingGraph/ShowingRewardGraph.py
 python ShowingGraph/ShowingEachRewardGraph.py
 python ShowingGraph/ShowingActionGraph.py
-python ShowingGraph/ShowingLossGraph.py
+#python ShowingGraph/ShowingLossGraph.py
 #python ShowingGraph/ShowingExpAreaGraph.py
 #python ShowingGraph/ShowingExpAreaGraphCompare.py
 python ShowingGraph/ShowingSimilarityGraph.py

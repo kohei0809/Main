@@ -573,7 +573,7 @@ class Saliency(Measure):
             obs_shape = H*W
             num_category = 0
             for i in range(40):
-                if category_num[i] >= obs_shape*0.05:
+                if category_num[i] > 0:
                     num_category += 1
 
             picture_value = count_sal * num_category
@@ -1754,12 +1754,7 @@ class ExploredMap(Measure):
         self.update_fog_of_war_mask(np.array([a_x, a_y]))
 
         # draw source and target parts last to avoid overlap
-        self._draw_goals_positions((episode.start_position[0]+1.0, episode.start_position[1], episode.start_position[2]+1.0))
-
-        if self._config.DRAW_SOURCE:
-            self._draw_point(
-                episode.start_position, maps.MAP_SOURCE_POINT_INDICATOR
-            )
+        #self._draw_goals_positions((episode.start_position[0]+1.0, episode.start_position[1], episode.start_position[2]+1.0))
             
         self.update_metric(None, None)
 
@@ -1781,18 +1776,22 @@ class ExploredMap(Measure):
 
         # Rather than return the whole map which may have large empty regions,
         # only return the occupied part (plus some padding).
-        #clipped_house_map = self._clip_map(house_map)
-        clipped_house_map = house_map
+        clipped_house_map = self._clip_map(house_map)
+        #clipped_house_map = house_map
 
         clipped_fog_of_war_map = None
         if self._config.FOG_OF_WAR.DRAW:
-            #clipped_fog_of_war_map = self._clip_map(self._fog_of_war_mask)
-            clipped_fog_of_war_map= self._fog_of_war_mask
+            clipped_fog_of_war_map = self._clip_map(self._fog_of_war_mask)
+            #clipped_fog_of_war_map= self._fog_of_war_mask
 
         self._metric = {
             "map": clipped_house_map,
             "fog_of_war_mask": clipped_fog_of_war_map,
-            "start_position": (self.start_position_x, self.start_position_y),
+            "agent_map_coord": (
+                map_agent_x - (self._ind_x_min - self._grid_delta),
+                map_agent_y - (self._ind_y_min - self._grid_delta),
+            ),
+            "agent_angle": self.get_polar_angle(),
         }
 
     def get_polar_angle(self):

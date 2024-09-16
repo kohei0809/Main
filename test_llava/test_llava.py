@@ -94,7 +94,20 @@ def human_test():
         for i in range(11):
             image_file = f"{image_folder}/{user_name}/result_{i}.png"
             print(image_file)
-            input_text = "You are an excellent property writer. This picture consists of 10 pictures arranged in one picture, 5 horizontally and 2 vertically on one building. In addition, a black line separates the pictures from each other. From each picture, you should understand the details of this building's environment and describe this building's environment in detail in the form of a summary of these pictures. At this point, do not describe each picture one at a time, but rather in a summarized form. Also note that each picture was taken in a separate location, so successive pictures are not positionally close. Additionally, do not mention which picture you are quoting from or the black line separating each picture."
+            #input_text = "You are an excellent property writer. This picture consists of 10 pictures arranged in one picture, 5 horizontally and 2 vertically on one building. In addition, a black line separates the pictures from each other. From each picture, you should understand the details of this building's environment and describe this building's environment in detail in the form of a summary of these pictures. At this point, do not describe each picture one at a time, but rather in a summarized form. Also note that each picture was taken in a separate location, so successive pictures are not positionally close. Additionally, do not mention which picture you are quoting from or the black line separating each picture."
+            input_text = "<Instructions>\n"\
+                    "You are an excellent property writer.\n"\
+                    "The input image consists of 10 pictures of a building, 5 vertically and 2 horizontally, within a single picture.\n"\
+                    "In addition, each picture is separated by a black line.\n"\
+                    "\n"\
+                    "From each picture, understand the details of this building's environment and summarize them in the form of a detailed description of this building's environment, paying attention to the <Notes>.\n"\
+                    "In doing so, please also consider the location of each picture as indicated by <Location Information>.\n"\
+                    "\n\n"\
+                    "<Notes>\n"\
+                    "・Note that adjacent pictures are not close in location.\n"\
+                    "・When describing the environment, do not mention whether it was taken from that picture or the black line separating each picture.\n"\
+                    "・Write a description of approximately 100 words in summary form without mentioning each individual picture."
+        
             image = load_image(image_file)
             response = generate_response(image, input_text, model_path)     
             print(f"A:{response[4:-4]}")
@@ -102,7 +115,7 @@ def human_test():
 
 if __name__ == '__main__':
     
-    #human_test()
+    human_test()
     
     #model_path = "/gs/fs/tga-aklab/matsumoto/Main/model/llava-v1.5-7b/"
     model_path = "liuhaotian/llava-v1.5-13b"
@@ -138,13 +151,13 @@ if __name__ == '__main__':
                 "This building features a spacious layout with multiple living rooms, bedrooms, and bathrooms. A living space with a fireplace is next to a fully equipped kitchen. There are also three bedrooms on the left side of the building, with a bathroom nearby. There are plenty of books to work with.\n"\
                 "Overall, the apartment is spacious and well-equipped, with many paintings on the walls."
         
-    image = load_image(image_file)
-    response = generate_response(image, input_text, model_path)
+    #image = load_image(image_file)
+    #response = generate_response(image, input_text, model_path)
 
     #plt.imshow(image)
     #plt.axis('off') 
     #plt.show()
 
     #print(f"Q:{input_text}")
-    print(f"A:{response[4:-4]}")
+    #print(f"A:{response[4:-4]}")
     print("FINISH !!")

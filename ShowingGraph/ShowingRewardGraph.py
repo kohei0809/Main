@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 import pathlib
 
 date = "24-06-14 15-28-02"
-date = "24-06-17 21-11-51"
+date = "24-07-25 06-34-14"
 
 mode = "train3"
 

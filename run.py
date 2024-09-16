@@ -79,10 +79,10 @@ def test(run_type: str, opts=None):
         config.TORCH_GPU_ID = 0
         config.freeze()
     elif run_type in ["eval", "eval2", "eval3"]:
-        datadate = "24-06-30 03-48-07"
-        current_ckpt = 52
-        datadate = "24-06-30 04-00-12"
-        current_ckpt = 49
+        datadate = "24-07-25 06-34-14"
+        datadate = "24-08-11 21-55-35"
+        current_ckpt = 120
+        current_ckpt = 165
 
         config.defrost()
         config.RL.PPO.num_mini_batch = 4
@@ -91,7 +91,7 @@ def test(run_type: str, opts=None):
         #config.NUM_PROCESSES = 1
         config.TEST_EPISODE_COUNT = 220
         config.VIDEO_OPTION = ["disk"]
-        config.TORCH_GPU_ID = 0
+        config.TORCH_GPU_ID = 1
         config.freeze()
     elif run_type in ["random", "random2", "random3"]:
         datadate = "" 
@@ -99,9 +99,10 @@ def test(run_type: str, opts=None):
         config.TASK_CONFIG.DATASET.SPLIT = "val"
         config.RL.PPO.num_mini_batch = 4
         config.NUM_PROCESSES = 24
+        #config.NUM_PROCESSES = 8
         #config.RL.PPO.num_mini_batch = 1
         #config.NUM_PROCESSES = 1
-        config.TEST_EPISODE_COUNT = 220
+        config.TEST_EPISODE_COUNT = 120
         config.VIDEO_OPTION = ["disk"]
         config.TORCH_GPU_ID = 1
         config.freeze()

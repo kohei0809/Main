@@ -2,7 +2,7 @@ BASE_TASK_CONFIG_PATH: "configs/tasks/maximuminfo_mp3d.yaml"
 TRAINER_NAME: "ppo"
 ENV_NAME: "InfoRLEnv"
 SIMULATOR_GPU_ID: 0
-TORCH_GPU_ID: 0
+TORCH_GPU_ID: 1
 #VIDEO_OPTION: []
 VIDEO_OPTION: ["disk"]
 TENSORBOARD_DIR: "tb/train"

@@ -27,7 +27,7 @@ from lavis.models import load_model_and_preprocess
 
 from habitat import Config
 from habitat.core.logging import logger
-from habitat.utils.visualizations.utils import observations_to_image, explored_to_image
+from habitat.utils.visualizations.utils import observations_to_image, explored_to_image, create_each_image
 from habitat_baselines.common.base_trainer import BaseRLTrainerOracle
 from habitat_baselines.common.baseline_registry import baseline_registry
 from habitat_baselines.common.environments import get_env_class
@@ -49,6 +49,13 @@ from llava.model.builder import load_pretrained_model
 from llava.utils import disable_torch_init
 from llava.mm_utils import tokenizer_image_token, get_model_name_from_path
 from transformers import TextStreamer
+
+import nltk
+from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
+from rouge_score import rouge_scorer
+from nltk.translate.meteor_score import meteor_score as Meteor_score
+nltk.download('wordnet')
+
 
 @baseline_registry.register_trainer(name="oracle2")
 class PPOTrainerO2(BaseRLTrainerOracle):
@@ -277,31 +284,24 @@ class PPOTrainerO2(BaseRLTrainerOracle):
                     r += self.each_subgoal_reward
                     self.subgoal_num_list[n][i] += 1
 
-        """
-        subgoal_num = []
-        for i in range(len(self.subgoal_list[n])):
-            subgoal_num.append(0)
-        if len(subgoal_num) == 0:
-            return r
-
-        for i in range(H):
-            for j in range(W):
-                obs = semantic_obs[i][j]
-                if obs in self.subgoal_list[n]:
-                    subgoal_num[self.subgoal_list[n].index(obs)] += 1
-
-        for i in range(len(self.subgoal_list[n])):
-            if subgoal_num[i] > threshold:
-                if self.subgoal_num_list[n][i] < self.threshold_subgoal:
-                    r += self.each_subgoal_reward
-                    self.subgoal_num_list[n][i] += 1
-        """
-
         return r
 
                 
     def _collect_rollout_step(
-        self, rollouts, current_episode_reward, current_episode_exp_area, current_episode_picture_value, current_episode_similarity, current_episode_picsim, current_episode_subgoal_reward, running_episode_stats
+        self, 
+        rollouts, 
+        current_episode_reward, 
+        current_episode_exp_area, 
+        current_episode_picture_value, 
+        current_episode_similarity, 
+        current_episode_picsim, 
+        current_episode_subgoal_reward, 
+        current_episode_blue_score,
+        current_episode_rouge_1_score,
+        current_episode_rouge_2_score,
+        current_episode_rouge_L_score,
+        current_episode_meteor_score,
+        running_episode_stats
     ):
         pth_time = 0.0
         env_time = 0.0
@@ -329,7 +329,6 @@ class PPOTrainerO2(BaseRLTrainerOracle):
 
         t_step_env = time.time()
 
-        #logger.info("actions=" + str(actions))
         outputs = self.envs.step([a[0].item() for a in actions])
         observations, rewards, dones, infos = [list(x) for x in zip(*outputs)]
 
@@ -346,6 +345,11 @@ class PPOTrainerO2(BaseRLTrainerOracle):
         exp_area = [] # 探索済みのエリア()
         semantic_obs = []
         subgoal_reward = []
+        blue_score = []
+        rouge_1_score = []
+        rouge_2_score = []
+        rouge_L_score = []
+        meteor_score = []
         n_envs = self.envs.num_envs
         for n in range(n_envs):
             reward.append(rewards[n][0])
@@ -353,52 +357,34 @@ class PPOTrainerO2(BaseRLTrainerOracle):
             picture_value.append(0)
             similarity.append(0)
             pic_sim.append(0)
-            exp_area.append(rewards[n][2]-rewards[n][3])
+            exp_area.append(rewards[n][2])
             semantic_obs.append(observations[n]["semantic"])
             subgoal_reward.append(0)
+            blue_score.append(0)
+            rouge_1_score.append(0)
+            rouge_2_score.append(0)
+            rouge_L_score.append(0)
+            meteor_score.append(0)
             
         current_episodes = self.envs.current_episodes()
-        for n in range(len(observations)):
-            if len(self._taken_picture_list[n]) == 0:
-                self._load_subgoal_list(current_episodes, n, rewards[n][5])
-            self._taken_picture_list[n].append([pic_val[n], observations[n]["rgb"]])
-            subgoal_reward[n] = self._calculate_subgoal_reward(semantic_obs[n], n)
-            #logger.info("########## subgoal_reward: " + str(subgoal_reward[n]))
-            reward[n] += subgoal_reward[n]
 
-            
         reward = torch.tensor(reward, dtype=torch.float, device=self.device).unsqueeze(1)
         exp_area = torch.tensor(exp_area, dtype=torch.float, device=self.device).unsqueeze(1)
         picture_value = torch.tensor(picture_value, dtype=torch.float, device=self.device).unsqueeze(1)
         similarity = torch.tensor(similarity, dtype=torch.float, device=self.device).unsqueeze(1)
         pic_sim = torch.tensor(pic_sim, dtype=torch.float, device=self.device).unsqueeze(1)
         subgoal_reward = torch.tensor(subgoal_reward, dtype=torch.float, device=self.device).unsqueeze(1)
+        blue_score = torch.tensor(blue_score, dtype=torch.float, device=self.device).unsqueeze(1)
+        rouge_1_score = torch.tensor(rouge_1_score, dtype=torch.float, device=self.device).unsqueeze(1)
+        rouge_2_score = torch.tensor(rouge_2_score, dtype=torch.float, device=self.device).unsqueeze(1)
+        rouge_L_score = torch.tensor(rouge_L_score, dtype=torch.float, device=self.device).unsqueeze(1)
+        meteor_score = torch.tensor(meteor_score, dtype=torch.float, device=self.device).unsqueeze(1)
             
         masks = torch.tensor(
             [[0.0] if done else [1.0] for done in dones],
             dtype=torch.float,
             device=current_episode_reward.device,
         )
-        
-        # episode ended
-        for n in range(len(observations)):
-            if masks[n].item() == 0.0:    
-                # 写真の選別
-                self._taken_picture_list[n], picture_value[n] = self._select_pictures(self._taken_picture_list[n])
-                results_image = self._create_results_image(self._taken_picture_list[n])
-
-                # Ground-Truth descriptionと生成文との類似度の計算 
-                description = self.description_df[self.description_df["scene_id"]==current_episodes[n].scene_id[-15:-4]]["description"].item()
-                #pred_description = self.create_description(self._taken_picture_list[n])
-                pred_description = ""
-                if results_image is not None:
-                    pred_description = self.create_description_from_results_image(results_image)
-                similarity[n] = self.calculate_similarity(pred_description, description)
-                pic_sim[n] = self._calculate_pic_sim(self._taken_picture_list[n])                
-                reward[n] += similarity[n]*10
-    
-                self._taken_picture_list[n] = []
-                
 
         current_episode_reward += reward
         running_episode_stats["reward"] += (1 - masks) * current_episode_reward
@@ -412,6 +398,16 @@ class PPOTrainerO2(BaseRLTrainerOracle):
         running_episode_stats["pic_sim"] += (1 - masks) * current_episode_picsim
         current_episode_subgoal_reward += subgoal_reward
         running_episode_stats["subgoal_reward"] += (1 - masks) * current_episode_subgoal_reward
+        current_episode_blue_score += blue_score
+        running_episode_stats["blue_score"] += (1 - masks) * current_episode_blue_score
+        current_episode_rouge_1_score += rouge_1_score
+        running_episode_stats["rouge_1_score"] += (1 - masks) * current_episode_rouge_1_score
+        current_episode_rouge_2_score += rouge_2_score
+        running_episode_stats["rouge_2_score"] += (1 - masks) * current_episode_rouge_2_score
+        current_episode_rouge_L_score += rouge_L_score
+        running_episode_stats["rouge_L_score"] += (1 - masks) * current_episode_rouge_L_score
+        current_episode_meteor_score += meteor_score
+        running_episode_stats["meteor_score"] += (1 - masks) * current_episode_meteor_score
         running_episode_stats["count"] += 1 - masks
 
         for k, v in self._extract_scalars_from_infos(infos).items():
@@ -431,6 +427,11 @@ class PPOTrainerO2(BaseRLTrainerOracle):
         current_episode_similarity *= masks
         current_episode_picsim *= masks
         current_episode_subgoal_reward *= masks
+        current_episode_blue_score *= masks
+        current_episode_rouge_1_score *= masks
+        current_episode_rouge_2_score *= masks
+        current_episode_rouge_L_score *= masks
+        current_episode_meteor_score *= masks
         
         if self._static_encoder:
             with torch.no_grad():
@@ -515,7 +516,7 @@ class PPOTrainerO2(BaseRLTrainerOracle):
             self.subgoal_list.append([])
             self.subgoal_num_list.append([])
 
-        self.each_subgoal_reward = 0.1
+        self.each_subgoal_reward = 0.2
         self.threshold_subgoal = 5
             
         ppo_cfg = self.config.RL.PPO
@@ -567,9 +568,11 @@ class PPOTrainerO2(BaseRLTrainerOracle):
         )
 
         ################
-        checkpoint_path = "/gs/fs/tga-aklab/matsumoto/Main/cpt/24-06-14 15-28-02/ckpt.163.pth"
-        ckpt_dict = self.load_checkpoint(checkpoint_path, map_location="cpu")
-        self.agent.load_state_dict(ckpt_dict["state_dict"])
+        #heckpoint_path = "/gs/fs/tga-aklab/matsumoto/Main/cpt/24-06-28 04-00-29/ckpt.44.pth"
+        #checkpoint_path = "/gs/fs/tga-aklab/matsumoto/Main/cpt/24-06-28 04-51-59/ckpt.48.pth"
+        #ckpt_dict = self.load_checkpoint(checkpoint_path, map_location="cpu")
+        #self.agent.load_state_dict(ckpt_dict["state_dict"])
+        #logger.info(f"########## LOAD CKPT at {checkpoint_path} ###########")
         #############
 
         rollouts = RolloutStorageOracle(
@@ -599,6 +602,11 @@ class PPOTrainerO2(BaseRLTrainerOracle):
         current_episode_similarity = torch.zeros(self.envs.num_envs, 1, device=self.device)
         current_episode_picsim = torch.zeros(self.envs.num_envs, 1, device=self.device)
         current_episode_subgoal_reward = torch.zeros(self.envs.num_envs, 1, device=self.device)
+        current_episode_blue_score = torch.zeros(self.envs.num_envs, 1, device=self.device)
+        current_episode_rouge_1_score = torch.zeros(self.envs.num_envs, 1, device=self.device)
+        current_episode_rouge_2_score = torch.zeros(self.envs.num_envs, 1, device=self.device)
+        current_episode_rouge_L_score = torch.zeros(self.envs.num_envs, 1, device=self.device)
+        current_episode_meteor_score = torch.zeros(self.envs.num_envs, 1, device=self.device)
         
         running_episode_stats = dict(
             count=torch.zeros(self.envs.num_envs, 1, device=current_episode_reward.device),
@@ -608,6 +616,11 @@ class PPOTrainerO2(BaseRLTrainerOracle):
             similarity=torch.zeros(self.envs.num_envs, 1, device=current_episode_reward.device),
             pic_sim=torch.zeros(self.envs.num_envs, 1, device=current_episode_reward.device),
             subgoal_reward=torch.zeros(self.envs.num_envs, 1, device=current_episode_reward.device),
+            blue_score=torch.zeros(self.envs.num_envs, 1, device=current_episode_reward.device),
+            rouge_1_score=torch.zeros(self.envs.num_envs, 1, device=current_episode_reward.device),
+            rouge_2_score=torch.zeros(self.envs.num_envs, 1, device=current_episode_reward.device),
+            rouge_L_score=torch.zeros(self.envs.num_envs, 1, device=current_episode_reward.device),
+            meteor_score=torch.zeros(self.envs.num_envs, 1, device=current_episode_reward.device),
         )
         window_episode_stats = defaultdict(
             lambda: deque(maxlen=ppo_cfg.reward_window_size)
@@ -647,7 +660,19 @@ class PPOTrainerO2(BaseRLTrainerOracle):
                     delta_env_time,
                     delta_steps,
                 ) = self._collect_rollout_step(
-                    rollouts, current_episode_reward, current_episode_exp_area, current_episode_picture_value, current_episode_similarity, current_episode_picsim, current_episode_subgoal_reward, running_episode_stats
+                    rollouts, 
+                    current_episode_reward, 
+                    current_episode_exp_area, 
+                    current_episode_picture_value, 
+                    current_episode_similarity, 
+                    current_episode_picsim, 
+                    current_episode_subgoal_reward, 
+                    current_episode_blue_score,
+                    current_episode_rouge_1_score,
+                    current_episode_rouge_2_score,
+                    current_episode_rouge_L_score,
+                    current_episode_meteor_score,
+                    running_episode_stats
                 )
                 pth_time += delta_pth_time
                 env_time += delta_env_time
@@ -709,9 +734,9 @@ class PPOTrainerO2(BaseRLTrainerOracle):
                 logger.info("Picture Value: " + str(metrics["picture_value"]))
                 logger.info("Pic_Sim: " + str(metrics["pic_sim"]))
                 logger.info("SubGoal_Reward: " + str(metrics["subgoal_reward"]))
+                logger.info("BLUE: " + str(metrics["blue_score"]) + ", ROUGE-1: " + str(metrics["rouge_1_score"]) + ", ROUGE-2: " + str(metrics["rouge_2_score"]) + ", ROUGE-L: " + str(metrics["rouge_L_score"]) + ", METEOR: " + str(metrics["meteor_score"]))
                 logger.info("REWARD: " + str(deltas["reward"] / deltas["count"]))
-                metrics_logger.writeLine(str(count_steps) + "," + str(metrics["exp_area"]) + "," + str(metrics["similarity"]) + "," + str(metrics["picture_value"]) + "," + str(metrics["pic_sim"]) + "," + str(metrics["subgoal_reward"]) + "," + str(metrics["raw_metrics.agent_path_length"]))
-                    
+                metrics_logger.writeLine(str(count_steps)+","+str(metrics["exp_area"])+","+str(metrics["similarity"])+","+str(metrics["picture_value"])+","+str(metrics["pic_sim"])+","+str(metrics["subgoal_reward"])+","+str(metrics["blue_score"])+","+str(metrics["rouge_1_score"])+","+str(metrics["rouge_2_score"])+","+str(metrics["rouge_L_score"])+","+str(metrics["meteor_score"])+","+str(metrics["raw_metrics.agent_path_length"]))
                 logger.info(metrics)
             
             loss_logger.writeLine(str(count_steps) + "," + str(value_loss) + "," + str(action_loss))
@@ -798,7 +823,7 @@ class PPOTrainerO2(BaseRLTrainerOracle):
         return True
 
 
-    def _create_results_image(self, picture_list, explored_picture):
+    def _create_results_image(self, picture_list, infos):
         images = []
         x_list = []
         y_list = []
@@ -808,18 +833,34 @@ class PPOTrainerO2(BaseRLTrainerOracle):
 
         for i in range(self._num_picture):
             idx = i%len(picture_list)
-            images.append(Image.fromarray(picture_list[idx][1]))
+            explored_map, fog_of_war_map = self.get_explored_picture(picture_list[idx][4])
+            range_x = np.where(np.any(explored_map == maps.MAP_INVALID_POINT, axis=1))[0]
+            range_y = np.where(np.any(explored_map == maps.MAP_INVALID_POINT, axis=0))[0]
+
+            _ind_x_min = range_x[0]
+            _ind_x_max = range_x[-1]
+            _ind_y_min = range_y[0]
+            _ind_y_max = range_y[-1]
+            _grid_delta = 5
+            clip_parameter = [_ind_x_min, _ind_x_max, _ind_y_min, _ind_y_max, _grid_delta]
+
+            frame = create_each_image(picture_list[idx][1], explored_map, fog_of_war_map, infos, clip_parameter)
+            
+            images.append(frame)
             x_list.append(picture_list[idx][2])
             y_list.append(picture_list[idx][3])
+            image = Image.fromarray(frame)
+            image.save(f"/gs/fs/tga-aklab/matsumoto/Main/test_{i}.png")
 
-        width, height = images[0].size
-        result_width = width * 5
-        result_height = height * 2
+        height, width, _ = images[0].shape
+        result_width = width * 2
+        result_height = height * 5
         result_image = Image.new("RGB", (result_width, result_height))
 
         for i, image in enumerate(images):
-            x_offset = (i % 5) * width
-            y_offset = (i // 5) * height
+            x_offset = (i // 5) * width
+            y_offset = (i % 5) * height
+            image = Image.fromarray(image)
             result_image.paste(image, (x_offset, y_offset))
         
         draw = ImageDraw.Draw(result_image)
@@ -828,59 +869,53 @@ class PPOTrainerO2(BaseRLTrainerOracle):
         for y in range(height, result_height, height):
             draw.line([(0, y), (result_width, y)], fill="black", width=7)
 
-        # explored_pictureの新しい横幅を計算
-        aspect_ratio = explored_picture.width / explored_picture.height
-        new_explored_picture_width = int(result_height * aspect_ratio)
+        return result_image, x_list, y_list
 
-        # explored_pictureをリサイズ
-        explored_picture = explored_picture.resize((new_explored_picture_width, result_height))
+    def _create_results_image2(self, picture_list, infos):
+        images = []
+        x_list = []
+        y_list = []
+    
+        if len(picture_list) == 0:
+            return None
 
-        # 最終画像の幅を計算
-        final_width = result_width + new_explored_picture_width
+        height, width, _ = picture_list[0][1].shape
+        result_width = width * 5
+        result_height = height * 2
+        result_image = Image.new("RGB", (result_width, result_height))
 
-        # 最終画像を作成
-        final_image = Image.new('RGB', (final_width, result_height), color=(255, 255, 255))
-
-        # result_imageを貼り付け
-        final_image.paste(result_image, (0, 0))
-
-        # リサイズしたexplored_pictureを貼り付け
-        final_image.paste(explored_picture, (result_width, 0))
-
-        return final_image, x_list, y_list
-
-
-    def create_description_from_results_image(self, results_image, start_position, x_list, y_list, input_change=False):
-        blue_x, blue_y = start_position
-        red_x = blue_x + 1.0
-        red_y = blue_y + 1.0
-        input_text_1 = "<Instructions>\n"\
-                        "You are an excellent property writer.\n"\
-                        "The picture you have entered consists of 10 pictures of a building, 5 horizontally and 2 vertically placed in a single picture, with a map drawing of the building to the right of the pictures.\n"\
-                        "Each picture is also separated by a black line.\n"\
-                        "From each picture, understand the details of this building's environment, and in the form of a summary of these pictures, describe this building's environment in detail, paying attention to the <Notes>.\n"\
-                        "In doing so, please also consider the location of each picture as indicated by <Location Information>.\n"\
-                        "\n\n"\
-                        "<Location Information>\n"\
-                        "The top leftmost picture is picture_1, and from its right to left are picture_2, picture_3, picture_4, and picture_5.\n"\
-                        "Similarly, the bottom-left corner is picture_6, and from its right, picture_7, picture_8, picture_9, and picture_10.\n"\
-                        "The following is the location information for each picture.\n\n"
-        input_text_2 = "<Notes>\n"\
-                        "・Note that each picture is taken at the location indicated by <Location Information>, and that adjacent pictures are not close in location.\n"\
-                        f"・In the map diagram on the right, there is a blue dot and a red dot. The coordinates of the blue point are ({blue_x}, {blue_y}), and the coordinates of the red point are ({red_x}, {red_y}), so please use this as a reference to output the location information for each picture from <Location Information>.\n"\
-                        "・When describing the environment, do not mention whether it was taken from that picture or the black line separating each picture.\n"\
-                        "・Only refer to the structure of the description from <Example of output>, and do not use your imagination to describe things not shown in the picture.\n"\
-                        "\n\n"\
-                        "<Example of output>\n"\
-                        "This building features a spacious layout with multiple living rooms, bedrooms, and bathrooms. A living space with a fireplace is next to a fully equipped kitchen. There are also three bedrooms on the left side of the building, with a bathroom nearby. There are plenty of books to work with.\n"\
-                        "Overall, the apartment is spacious and well-equipped, with many paintings on the walls."
-        
-        location_input = ""
         for i in range(self._num_picture):
-            idx = i+1
-            location_input += "picture_"+str(idx)+" : ("+str(x_list[i])+", "+str(y_list[i])+")\n"
-        location_input+="\n"
-        input_text = input_text_1 + location_input + input_text_2
+            idx = i%len(picture_list)
+            images.append(picture_list[idx][1])
+
+        for i, image in enumerate(images):
+            x_offset = (i % 5) * width
+            y_offset = (i // 5) * height
+            image = Image.fromarray(image)
+            result_image.paste(image, (x_offset, y_offset))
+        
+        draw = ImageDraw.Draw(result_image)
+        for x in range(width, result_width, width):
+            draw.line([(x, 0), (x, result_height)], fill="black", width=7)
+        for y in range(height, result_height, height):
+            draw.line([(0, y), (result_width, y)], fill="black", width=7)
+
+        return result_image, x_list, y_list
+
+
+    def create_description_from_results_image(self, results_image, x_list, y_list, input_change=False):
+        input_text = "<Instructions>\n"\
+                    "You are an excellent property writer.\n"\
+                    "The input image consists of 10 pictures of a building, 5 vertically and 2 horizontally, within a single picture.\n"\
+                    "In addition, each picture is separated by a black line.\n"\
+                    "\n"\
+                    "From each picture, understand the details of this building's environment and summarize them in the form of a detailed description of this building's environment, paying attention to the <Notes>.\n"\
+                    "In doing so, please also consider the location of each picture as indicated by <Location Information>.\n"\
+                    "\n\n"\
+                    "<Notes>\n"\
+                    "・Note that adjacent pictures are not close in location.\n"\
+                    "・When describing the environment, do not mention whether it was taken from that picture or the black line separating each picture.\n"\
+                    "・Write a description of approximately 100 words in summary form without mentioning each individual picture."
         #logger.info("############## input_text ###############")
         #logger.info(input_text)
         if input_change == True:
@@ -888,7 +923,7 @@ class PPOTrainerO2(BaseRLTrainerOracle):
             input_text = "You are an excellent property writer. This picture consists of 10 pictures arranged in one picture, 5 horizontally and 2 vertically on one building. In addition, a black line separates the pictures from each other. From each picture, you should understand the details of this building's environment and describe this building's environment in detail in the form of a summary of these pictures. At this point, do not describe each picture one at a time, but rather in a summarized form. Also note that each picture was taken in a separate location, so successive pictures are not positionally close. Additionally, do not mention which picture you are quoting from or the black line separating each picture."
         response = self.generate_response(results_image, input_text)
         response = response[4:-4]
-        return response, location_input
+        return response
 
 
     def generate_response(self, image, input_text):
@@ -943,10 +978,28 @@ class PPOTrainerO2(BaseRLTrainerOracle):
         return outputs
 
 
+    # BLEUスコアの計算
+    def calculate_bleu(self, reference, candidate):
+        reference = [reference.split()]
+        candidate = candidate.split()
+        smoothie = SmoothingFunction().method4
+        return sentence_bleu(reference, candidate, smoothing_function=smoothie)
+
+    # ROUGEスコアの計算
+    def calculate_rouge(self, reference, candidate):
+        scorer = rouge_scorer.RougeScorer(['rouge1', 'rouge2', 'rougeL'], use_stemmer=True)
+        scores = scorer.score(reference, candidate)
+        return scores
+
+    # METEORスコアの計算
+    def calculate_meteor(self, reference, candidate):
+        reference = reference.split()
+        candidate = candidate.split()
+        return Meteor_score([reference], candidate)
+
     def get_explored_picture(self, infos):
         explored_map = infos["map"]
         fog_of_war_map = infos["fog_of_war_mask"]
-        start_position = infos["start_position"]
         y, x = explored_map.shape
 
         for i in range(y):
@@ -957,26 +1010,11 @@ class PPOTrainerO2(BaseRLTrainerOracle):
                 else:
                     if explored_map[i][j] in [maps.MAP_VALID_POINT, maps.MAP_INVALID_POINT]:
                         explored_map[i][j] = maps.MAP_BORDER_INDICATOR
-
-        range_x = np.where(~np.all(explored_map == maps.MAP_BORDER_INDICATOR, axis=1))[0]
-        range_y = np.where(~np.all(explored_map == maps.MAP_BORDER_INDICATOR, axis=0))[0]
-
-        _ind_x_min = range_x[0]
-        _ind_x_max = range_x[-1]
-        _ind_y_min = range_y[0]
-        _ind_y_max = range_y[-1]
-        _grid_delta = 3
-
-        explored_map = explored_map[
-            _ind_x_min - _grid_delta : _ind_x_max + _grid_delta,
-            _ind_y_min - _grid_delta : _ind_y_max + _grid_delta,
-        ]
             
-        return explored_map, start_position
-
+        return explored_map, fog_of_war_map
 
     def _eval_checkpoint(self, checkpoint_path: str, log_manager: LogManager, date: str, checkpoint_index: int = 0) -> None:
-        logger.info("############### EAVL2 ##################")
+        logger.info("############### EAVL3 ##################")
         self.log_manager = log_manager
         #ログ出力設定
         #time, reward
@@ -1026,7 +1064,7 @@ class PPOTrainerO2(BaseRLTrainerOracle):
 
         # Load the clip model
         self.clip_model, self.preprocess = clip.load('ViT-B/32', self.device)
-        self._select_threthould = 0.9
+        self._select_threthould = 0.8
 
         # LLaVA model
         load_4bit = True
@@ -1060,6 +1098,12 @@ class PPOTrainerO2(BaseRLTrainerOracle):
         current_episode_picture_value = torch.zeros(self.envs.num_envs, 1, device=self.device)
         current_episode_similarity = torch.zeros(self.envs.num_envs, 1, device=self.device)
         current_episode_picsim = torch.zeros(self.envs.num_envs, 1, device=self.device)
+        current_episode_blue_score = torch.zeros(self.envs.num_envs, 1, device=self.device)
+        current_episode_rouge_1_score = torch.zeros(self.envs.num_envs, 1, device=self.device)
+        current_episode_rouge_2_score = torch.zeros(self.envs.num_envs, 1, device=self.device)
+        current_episode_rouge_L_score = torch.zeros(self.envs.num_envs, 1, device=self.device)
+        current_episode_meteor_score = torch.zeros(self.envs.num_envs, 1, device=self.device)
+        
         
         test_recurrent_hidden_states = torch.zeros(
             self.actor_critic.net.num_recurrent_layers,
@@ -1080,10 +1124,17 @@ class PPOTrainerO2(BaseRLTrainerOracle):
 
         pbar = tqdm.tqdm(total=self.config.TEST_EPISODE_COUNT)
         self.actor_critic.eval()
+        self.step = 0
         while (
             len(stats_episodes) < self.config.TEST_EPISODE_COUNT
             and self.envs.num_envs > 0
         ):  
+            """
+            self.step += 1
+            logger.info(f"step={self.step}")
+            if self.step == 500:
+                self.step = 0
+            """
 
             current_episodes = self.envs.current_episodes()
 
@@ -1120,6 +1171,11 @@ class PPOTrainerO2(BaseRLTrainerOracle):
             similarity = []
             pic_sim = []
             exp_area = [] # 探索済みのエリア()
+            blue_score = []
+            rouge_1_score = []
+            rouge_2_score = []
+            rouge_L_score = []
+            meteor_score= []
             n_envs = self.envs.num_envs
             for n in range(n_envs):
                 reward.append(rewards[n][0])
@@ -1127,15 +1183,25 @@ class PPOTrainerO2(BaseRLTrainerOracle):
                 picture_value.append(0)
                 similarity.append(0)
                 pic_sim.append(0)
-                exp_area.append(rewards[n][2]-rewards[n][3])
+                exp_area.append(rewards[n][2])
+                blue_score.append(0)
+                rouge_1_score.append(0)
+                rouge_2_score.append(0)
+                rouge_L_score.append(0)
+                meteor_score.append(0)
                 
             for n in range(len(observations)):
-                self._taken_picture_list[n].append([pic_val[n], observations[n]["rgb"], rewards[n][6], rewards[n][7]])
+                self._taken_picture_list[n].append([pic_val[n], observations[n]["rgb"], rewards[n][6], rewards[n][7], infos[n]["explored_map"]])
                 
             reward = torch.tensor(reward, dtype=torch.float, device=self.device).unsqueeze(1)
             exp_area = torch.tensor(exp_area, dtype=torch.float, device=self.device).unsqueeze(1)
             picture_value = torch.tensor(picture_value, dtype=torch.float, device=self.device).unsqueeze(1)
             similarity = torch.tensor(similarity, dtype=torch.float, device=self.device).unsqueeze(1)
+            blue_score = torch.tensor(blue_score, dtype=torch.float, device=self.device).unsqueeze(1)
+            rouge_1_score = torch.tensor(rouge_1_score, dtype=torch.float, device=self.device).unsqueeze(1)
+            rouge_2_score = torch.tensor(rouge_2_score, dtype=torch.float, device=self.device).unsqueeze(1)
+            rouge_L_score = torch.tensor(rouge_L_score, dtype=torch.float, device=self.device).unsqueeze(1)
+            meteor_score = torch.tensor(meteor_score, dtype=torch.float, device=self.device).unsqueeze(1)
             
             current_episode_reward += reward
             current_episode_exp_area += exp_area
@@ -1157,45 +1223,37 @@ class PPOTrainerO2(BaseRLTrainerOracle):
                     while (current_episodes[n].scene_id, _episode_id) in stats_episodes:
                         _episode_id = str(int(_episode_id) + 1)
 
-                    # tannsakuzumino kannkyouno syasinnwo syutoku
-                    explored_picture, start_position = self.get_explored_picture(infos[n]["explored_map"])
-                    explored_picture = explored_to_image(explored_picture, infos[n])
-                    explored_picture = Image.fromarray(np.uint8(explored_picture))
-                    
-                    # 写真の選別
-                    self._taken_picture_list[n], picture_value[n] = self._select_pictures(self._taken_picture_list[n])
-                    #self._taken_picture_list[n], picture_value[n] = self._select_random_pictures(self._taken_picture_list[n])
-                    results_image, positions_x, positions_y = self._create_results_image(self._taken_picture_list[n], explored_picture)
-                    
-                    # Ground-Truth descriptionと生成文との類似度の計算 
-                    description = self.description_df[self.description_df["scene_id"]==current_episodes[n].scene_id[-15:-4]]["description"].item()
-                    #pred_description = self.create_description(self._taken_picture_list[n])
-                    
-                    pred_description = ""
-                    location_input = ""
-                    if results_image is not None:
-                        pred_description, location_input = self.create_description_from_results_image(results_image, start_position, positions_x, positions_y, input_change=True)
-                        
-                    similarity[n] = self.calculate_similarity(pred_description, description)
-                    pic_sim[n] = self._calculate_pic_sim(self._taken_picture_list[n])
-                    reward[n] += similarity[n]*10
+                    similarity[n] = 0.0
+                    pic_sim[n] = 0.0
+
+                    blue_score[n] = 0.0
+                    rouge_scores = 0.0
+                    rouge_1_score[n] = 0.0
+                    rouge_2_score[n] = 0.0
+                    rouge_L_score[n] = 0.0
+                    meteor_score[n] = 0.0
+
                     current_episode_reward += similarity[n]*10
                     
                     # average of picture value par 1 picture
                     current_episode_picture_value[n] += picture_value[n]
                     current_episode_similarity[n] += similarity[n]
                     current_episode_picsim[n] += pic_sim[n]
+                    current_episode_blue_score[n] += blue_score[n]
+                    current_episode_rouge_1_score[n] += rouge_1_score[n]
+                    current_episode_rouge_2_score[n] += rouge_2_score[n]
+                    current_episode_rouge_L_score[n] += rouge_L_score[n]
+                    current_episode_meteor_score[n] += meteor_score[n]
                     
                     # save description
-                    out_path = os.path.join("log/" + date + "/eval2/description.txt")
+                    out_path = os.path.join("log/" + date + "/eval3/description.txt")
                     with open(out_path, 'a') as f:
                         # print関数でファイルに出力する
                         print(str(current_episodes[n].scene_id[-15:-4]) + "_" + str(_episode_id), file=f)
                         print(description, file=f)
                         print(pred_description,file=f)
                         print(similarity[n].item(),file=f)
-                        print(location_input, file=f)
-                        print(start_position, file=f)
+                        #print(location_input, file=f)
 
                     pbar.update()
                     episode_stats = dict()
@@ -1204,6 +1262,11 @@ class PPOTrainerO2(BaseRLTrainerOracle):
                     episode_stats["picture_value"] = current_episode_picture_value[n].item()
                     episode_stats["similarity"] = current_episode_similarity[n].item()
                     episode_stats["pic_sim"] = current_episode_picsim[n].item()
+                    episode_stats["blue_score"] = current_episode_blue_score[n].item()
+                    episode_stats["rouge_1_score"] = current_episode_rouge_1_score[n].item()
+                    episode_stats["rouge_2_score"] = current_episode_rouge_2_score[n].item()
+                    episode_stats["rouge_L_score"] = current_episode_rouge_L_score[n].item()
+                    episode_stats["meteor_score"] = current_episode_meteor_score[n].item()
                     
                     episode_stats.update(
                         self._extract_scalars_from_info(infos[i])
@@ -1213,6 +1276,11 @@ class PPOTrainerO2(BaseRLTrainerOracle):
                     current_episode_picture_value[n] = 0
                     current_episode_similarity[n] = 0
                     current_episode_picsim[n] = 0
+                    current_episode_blue_score[n] = 0
+                    current_episode_rouge_1_score[n] = 0
+                    current_episode_rouge_2_score[n] = 0
+                    current_episode_rouge_L_score[n] = 0
+                    current_episode_meteor_score[n] = 0
 
                     stats_episodes[
                         (
@@ -1249,7 +1317,7 @@ class PPOTrainerO2(BaseRLTrainerOracle):
                         # Save taken picture                        
                         for j in range(len(self._taken_picture_list[n])):
                             value = self._taken_picture_list[n][j][0]
-                            picture_name = f"episoede={_episode_id}-{len(stats_episodes)}-{j}-{value}"
+                            picture_name = f"episode={_episode_id}-{len(stats_episodes)}-{j}-{value}"
                             dir_name = "./taken_picture/" + date 
                             os.makedirs(dir_name, exist_ok=True)
                         
@@ -1258,7 +1326,7 @@ class PPOTrainerO2(BaseRLTrainerOracle):
                             picture.save(file_path)
                         
                         if results_image is not None:
-                            results_image.save(f"/gs/fs/tga-aklab/matsumoto/Main/taken_picture/{date}/episoede={_episode_id}-{len(stats_episodes)}.png")    
+                            results_image.save(f"/gs/fs/tga-aklab/matsumoto/Main/taken_picture/{date}/episode={_episode_id}-{len(stats_episodes)}.png")    
                     
                     rgb_frames[n] = []
                     self._taken_picture_list[n] = []
@@ -1318,16 +1386,17 @@ class PPOTrainerO2(BaseRLTrainerOracle):
 
         metrics = {k: v for k, v in aggregated_stats.items() if k != "reward"}
 
-        logger.info("Similarity: " + str(metrics["similarity"]))
-        logger.info("Pic_Sim: " + str(metrics["pic_sim"]))
-        logger.info("Picture Value: " + str(metrics["picture_value"]))
-        eval_metrics_logger.writeLine(str(step_id)+","+str(metrics["exp_area"])+","+str(metrics["similarity"])+","+str(metrics["picture_value"])+","+str(metrics["pic_sim"])+","+str(metrics["raw_metrics.agent_path_length"]))
+        #logger.info("Similarity: " + str(metrics["similarity"]))
+        #logger.info("Pic_Sim: " + str(metrics["pic_sim"]))
+        #logger.info("Picture Value: " + str(metrics["picture_value"]))
+        #logger.info("BLUE: " + str(metrics["blue_score"]) + ", ROUGE-1: " + str(metrics["rouge_1_score"]) + ", ROUGE-2: " + str(metrics["rouge_2_score"]) + ", ROUGE-L: " + str(metrics["rouge_L_score"]) + ", METEOR: " + str(metrics["meteor_score"]))
+        eval_metrics_logger.writeLine(str(step_id)+","+str(metrics["exp_area"])+","+str(metrics["similarity"])+","+str(metrics["picture_value"])+","+str(metrics["pic_sim"])+","+str(metrics["blue_score"])+","+str(metrics["rouge_1_score"])+","+str(metrics["rouge_2_score"])+","+str(metrics["rouge_L_score"])+","+str(metrics["meteor_score"])+","+str(metrics["raw_metrics.agent_path_length"]))
 
         self.envs.close()
         
         
     def random_eval(self, log_manager: LogManager, date: str,) -> None:
-        logger.info("RANDOM 2")
+        logger.info("RANDOM 3")
         self.log_manager = log_manager
         #ログ出力設定
         #time, reward
@@ -1406,6 +1475,11 @@ class PPOTrainerO2(BaseRLTrainerOracle):
         current_episode_picture_value = torch.zeros(self.envs.num_envs, 1, device=self.device)
         current_episode_similarity = torch.zeros(self.envs.num_envs, 1, device=self.device)
         current_episode_picsim = torch.zeros(self.envs.num_envs, 1, device=self.device)
+        current_episode_blue_score = torch.zeros(self.envs.num_envs, 1, device=self.device)
+        current_episode_rouge_1_score = torch.zeros(self.envs.num_envs, 1, device=self.device)
+        current_episode_rouge_2_score = torch.zeros(self.envs.num_envs, 1, device=self.device)
+        current_episode_rouge_L_score = torch.zeros(self.envs.num_envs, 1, device=self.device)
+        current_episode_meteor_score = torch.zeros(self.envs.num_envs, 1, device=self.device)
         
         test_recurrent_hidden_states = torch.zeros(
             self.actor_critic.net.num_recurrent_layers,
@@ -1459,7 +1533,12 @@ class PPOTrainerO2(BaseRLTrainerOracle):
             similarity = []
             pic_sim = []
             exp_area = [] # 探索済みのエリア()
-            is_take_picture = []
+            blue_score = []
+            rouge_1_score = []
+            rouge_2_score = []
+            rouge_L_score = []
+            meteor_score= []
+
             n_envs = self.envs.num_envs
 
             for n in range(n_envs):
@@ -1468,16 +1547,25 @@ class PPOTrainerO2(BaseRLTrainerOracle):
                 picture_value.append(0)
                 similarity.append(0)
                 pic_sim.append(0)
-                exp_area.append(rewards[n][2]-rewards[n][3])
-                is_take_picture.append(rewards[n][4])
+                exp_area.append(rewards[n][2])
+                blue_score.append(0)
+                rouge_1_score.append(0)
+                rouge_2_score.append(0)
+                rouge_L_score.append(0)
+                meteor_score.append(0)
                 
             for n in range(len(observations)):
                 self._taken_picture_list[n].append([pic_val[n], observations[n]["rgb"], rewards[n][6], rewards[n][7]])
-                        
+
             reward = torch.tensor(reward, dtype=torch.float, device=self.device).unsqueeze(1)
             exp_area = torch.tensor(exp_area, dtype=torch.float, device=self.device).unsqueeze(1)
             picture_value = torch.tensor(picture_value, dtype=torch.float, device=self.device).unsqueeze(1)
             similarity = torch.tensor(similarity, dtype=torch.float, device=self.device).unsqueeze(1)
+            blue_score = torch.tensor(blue_score, dtype=torch.float, device=self.device).unsqueeze(1)
+            rouge_1_score = torch.tensor(rouge_1_score, dtype=torch.float, device=self.device).unsqueeze(1)
+            rouge_2_score = torch.tensor(rouge_2_score, dtype=torch.float, device=self.device).unsqueeze(1)
+            rouge_L_score = torch.tensor(rouge_L_score, dtype=torch.float, device=self.device).unsqueeze(1)
+            meteor_score = torch.tensor(meteor_score, dtype=torch.float, device=self.device).unsqueeze(1)
             
             current_episode_reward += reward
             current_episode_exp_area += exp_area
@@ -1499,16 +1587,10 @@ class PPOTrainerO2(BaseRLTrainerOracle):
                     while (current_episodes[n].scene_id, _episode_id) in stats_episodes:
                         _episode_id = str(int(_episode_id) + 1)
 
-                    # tannsakuzumino kannkyouno syasinnwo syutoku
-                    explored_picture, start_position = self.get_explored_picture(infos[n]["explored_map"])
-                    explored_picture = explored_to_image(explored_picture, infos[n])
-                    explored_picture = Image.fromarray(np.uint8(explored_picture))
-                    #file_path = f"/gs/fs/tga-aklab/matsumoto/Main/test_explored_map/{len(stats_episodes)}-{n}.png"
-                    #explored_picture.save(file_path)
-
                     # 写真の選別
                     self._taken_picture_list[n], picture_value[n] = self._select_random_pictures(self._taken_picture_list[n])
-                    results_image, positions_x, positions_y = self._create_results_image(self._taken_picture_list[n], explored_picture)
+                    #results_image, positions_x, positions_y = self._create_results_image(self._taken_picture_list[n], infos[n]["explored_map"])
+                    results_image, positions_x, positions_y = self._create_results_image2(self._taken_picture_list[n], infos[n]["explored_map"])
                         
                     # Ground-Truth descriptionと生成文との類似度の計算 
                     description = self.description_df[self.description_df["scene_id"]==current_episodes[n].scene_id[-15:-4]]["description"].item()
@@ -1517,27 +1599,40 @@ class PPOTrainerO2(BaseRLTrainerOracle):
                     pred_description = ""
                     location_input = ""
                     if results_image is not None:
-                        pred_description, location_input = self.create_description_from_results_image(results_image, start_position, positions_x, positions_y, input_change=True)
-                        
+                        pred_description = self.create_description_from_results_image(results_image, positions_x, positions_y)
+                    
                     similarity[n] = self.calculate_similarity(pred_description, description)
                     pic_sim[n] = self._calculate_pic_sim(self._taken_picture_list[n])
+
+                    blue_score[n] = self.calculate_bleu(description, pred_description)
+                    rouge_scores = self.calculate_rouge(description, pred_description)
+                    #logger.info(f"####rouge_scores={rouge_scores['rouge1'].fmeasure}")
+                    rouge_1_score[n] = rouge_scores['rouge1'].fmeasure
+                    rouge_2_score[n] = rouge_scores['rouge2'].fmeasure
+                    rouge_L_score[n] = rouge_scores['rougeL'].fmeasure
+                    meteor_score[n] = self.calculate_meteor(description, pred_description)
+
                     reward[n] += similarity[n]*10
                     current_episode_reward += similarity[n]*10
                         
                     current_episode_picture_value[n] += picture_value[n]
                     current_episode_similarity[n] += similarity[n]
                     current_episode_picsim[n] += pic_sim[n]
+                    current_episode_blue_score[n] += blue_score[n]
+                    current_episode_rouge_1_score[n] += rouge_1_score[n]
+                    current_episode_rouge_2_score[n] += rouge_2_score[n]
+                    current_episode_rouge_L_score[n] += rouge_L_score[n]
+                    current_episode_meteor_score[n] += meteor_score[n]
 
                     # save description
-                    out_path = os.path.join("log/" + date + "/random2/description.txt")
+                    out_path = os.path.join("log/" + date + "/random3/description.txt")
                     with open(out_path, 'a') as f:
                         # print関数でファイルに出力する
                         print(str(current_episodes[n].scene_id[-15:-4]) + "_" + str(_episode_id), file=f)
                         print(description, file=f)
                         print(pred_description, file=f)
                         print(similarity[n].item(), file=f)
-                        print(location_input, file=f)
-                        print(start_position, file=f)
+                        #print(location_input, file=f)
                                         
                     pbar.update()
                     episode_stats = dict()
@@ -1546,6 +1641,11 @@ class PPOTrainerO2(BaseRLTrainerOracle):
                     episode_stats["picture_value"] = current_episode_picture_value[n].item()
                     episode_stats["similarity"] = current_episode_similarity[n].item()
                     episode_stats["pic_sim"] = current_episode_picsim[n].item()
+                    episode_stats["blue_score"] = current_episode_blue_score[n].item()
+                    episode_stats["rouge_1_score"] = current_episode_rouge_1_score[n].item()
+                    episode_stats["rouge_2_score"] = current_episode_rouge_2_score[n].item()
+                    episode_stats["rouge_L_score"] = current_episode_rouge_L_score[n].item()
+                    episode_stats["meteor_score"] = current_episode_meteor_score[n].item()
 
                     episode_stats.update(
                         self._extract_scalars_from_info(infos[n])
@@ -1555,6 +1655,11 @@ class PPOTrainerO2(BaseRLTrainerOracle):
                     current_episode_picture_value[n] = 0
                     current_episode_similarity[n] = 0
                     current_episode_picsim[n] = 0
+                    current_episode_blue_score[n] = 0
+                    current_episode_rouge_1_score[n] = 0
+                    current_episode_rouge_2_score[n] = 0
+                    current_episode_rouge_L_score[n] = 0
+                    current_episode_meteor_score[n] = 0
 
                     stats_episodes[
                         (
@@ -1592,7 +1697,7 @@ class PPOTrainerO2(BaseRLTrainerOracle):
                         # Save taken picture                        
                         for j in range(len(self._taken_picture_list[n])):
                             value = self._taken_picture_list[n][j][0]
-                            picture_name = f"episoede={_episode_id}-{len(stats_episodes)}-{j}-{value}"
+                            picture_name = f"episode={_episode_id}-{len(stats_episodes)}-{j}-{value}"
                             dir_name = "./taken_picture/" + date 
                             os.makedirs(dir_name, exist_ok=True)
                             
@@ -1601,7 +1706,7 @@ class PPOTrainerO2(BaseRLTrainerOracle):
                             picture.save(file_path)
                             
                         if results_image is not None:
-                            results_image.save(f"/gs/fs/tga-aklab/matsumoto/Main/taken_picture/{date}/episoede={_episode_id}-{len(stats_episodes)}.png")    
+                            results_image.save(f"/gs/fs/tga-aklab/matsumoto/Main/taken_picture/{date}/episode={_episode_id}-{len(stats_episodes)}.png")    
                     
                     rgb_frames[n] = []
                     self._taken_picture_list[n] = []
@@ -1632,6 +1737,7 @@ class PPOTrainerO2(BaseRLTrainerOracle):
         logger.info("Similarity: " + str(metrics["similarity"]))
         logger.info("Pic_Sim: " + str(metrics["pic_sim"]))
         logger.info("Picture Value: " + str(metrics["picture_value"]))
-        eval_metrics_logger.writeLine(str(step_id)+","+str(metrics["exp_area"])+","+str(metrics["similarity"])+","+str(metrics["picture_value"])+","+str(metrics["pic_sim"])+","+str(metrics["raw_metrics.agent_path_length"]))
+        logger.info("BLUE: " + str(metrics["blue_score"]) + ", ROUGE-1: " + str(metrics["rouge_1_score"]) + ", ROUGE-2: " + str(metrics["rouge_2_score"]) + ", ROUGE-L: " + str(metrics["rouge_L_score"]) + ", METEOR: " + str(metrics["meteor_score"]))
+        eval_metrics_logger.writeLine(str(step_id)+","+str(metrics["exp_area"])+","+str(metrics["similarity"])+","+str(metrics["picture_value"])+","+str(metrics["pic_sim"])+","+str(metrics["blue_score"])+","+str(metrics["rouge_1_score"])+","+str(metrics["rouge_2_score"])+","+str(metrics["rouge_L_score"])+","+str(metrics["meteor_score"])+","+str(metrics["raw_metrics.agent_path_length"]))
 
         self.envs.close()

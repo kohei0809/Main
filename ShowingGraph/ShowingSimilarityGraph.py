@@ -6,11 +6,11 @@ date = "24-02-18 15-24-41"
 #date = "24-02-20 18-05-03"
 #date = "24-02-21 23-05-39"
 date = "24-06-14 15-28-02"
-date = "24-06-17 21-11-51"
+date = "24-07-25 06-34-14"
 mode = "train3"
 #mode = "eval"
 
-df = pd.read_csv(f"log/{date}/{mode}/metrics.csv", names=['time', 'exp_area', 'similarity',  'picture_value', 'pic_sim', 'subgoal_reward', 'path_length'], header=None)
+df = pd.read_csv(f"log/{date}/{mode}/metrics.csv", names=['time', 'exp_area', 'similarity',  'picture_value', 'pic_sim', 'subgoal_reward', 'blue_score', 'rouge_1_score', 'rouge_2_score', 'rouge_L_score', 'meteor_score', 'path_length'], header=None)
 plt.plot(df['time'], df['similarity'], color="blue", label="Sentence Similarity")
 
 #ラベルの追加
