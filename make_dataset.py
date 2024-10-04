@@ -22,9 +22,9 @@ from habitat.core.logging import logger
 
    
 if __name__ == '__main__':
-    save_train = True
+    save_train = False
     save_val = True
-    save_test = True
+    save_test = False
     
     exp_config = "./habitat_baselines/config/maximuminfo/ppo_maximuminfo.yaml"
     opts = None
@@ -51,7 +51,7 @@ if __name__ == '__main__':
     episode_num = 20000
     
     i = 0
-    dataset_path = "data/datasets/maximuminfo/v3/"
+    dataset_path = "data/datasets/maximuminfo/v4/"
     dataset_train = MaximumInfoDatasetV1()
     dataset_val = MaximumInfoDatasetV1()
     dataset_test = MaximumInfoDatasetV1()
@@ -93,6 +93,9 @@ if __name__ == '__main__':
         scene_type = df[df["scene_id"]==scene]["type"].item()
         logger.info(f"scene: {scene}, type: {scene_type}")
         if df[df["scene_id"]==scene]["type"].item()=="train":
+            if save_train == False:
+                i += 1
+                continue
             config.defrost()
             split = "train"
             episode_num = 200000
@@ -104,17 +107,24 @@ if __name__ == '__main__':
             dataset_train.episodes += generate_maximuminfo_episode(sim=sim, num_episodes=episode_num)
             
         elif df[df["scene_id"]==scene]["type"].item()=="val":
+            if save_val == False:
+                i += 1
+                continue
             config.defrost()
             split = "val"
-            episode_num = 20
+            episode_num = 10
             config.TASK_CONFIG.SIMULATOR.SCENE = "data/scene_datasets/mp3d/" + scene + "/" + scene + ".glb"
             config.TASK_CONFIG.DATASET.DATA_PATH = dataset_path + split + "/" + split +  ".json.gz"
             config.freeze()
         
             sim = HabitatSim(config=config.TASK_CONFIG.SIMULATOR)
             dataset_val.episodes += generate_maximuminfo_episode(sim=sim, num_episodes=episode_num)
+            logger.info(f"{scene} is over")
 
         elif df[df["scene_id"]==scene]["type"].item()=="test":
+            if save_test == False:
+                i += 1
+                continue
             config.defrost()
             split = "test"
             episode_num = 20
@@ -127,8 +137,7 @@ if __name__ == '__main__':
 
         else:
             break
-
-        
+    
         logger.info(str(i) + ": SPLIT:train, NUM:" + str(episode_num) + ", TOTAL_NUM:" + str(len(dataset_train.episodes)))
         logger.info("SCENE:" + scene)
         sim.close()

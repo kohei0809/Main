@@ -7,15 +7,25 @@ import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 from sentence_transformers import SentenceTransformer
 from sklearn.model_selection import train_test_split
+from transformers import AutoTokenizer
 
 from log_manager import LogManager
 from habitat.core.logging import logger
 
 # SBERT + MLPによる回帰モデルの定義
 class SBERTRegressionModel(nn.Module):
-    def __init__(self, sbert_model, hidden_size1=512, hidden_size2=256, hidden_size3=128):
+    def __init__(self, sbert_model, device, hidden_size1=512, hidden_size2=256, hidden_size3=128):
         super(SBERTRegressionModel, self).__init__()
-        self.sbert = sbert_model
+        self.sbert = sbert_model.to(device)
+        self.device = device
+        
+        # トークナイザーに特殊トークンを追加
+        special_tokens = ["[SCORE]", "[COMPARE]"]
+        self.tokenizer = AutoTokenizer.from_pretrained("sentence-transformers/all-MiniLM-L6-v2")
+        self.tokenizer.add_tokens(special_tokens)
+
+        # Sentence-BERT モデルに新しいトークンを追加したことを知らせる
+        self.sbert.resize_token_embeddings(len(self.tokenizer))
         
         # 6つの埋め込みベクトルを結合するため、入力サイズは6倍に
         embedding_size = self.sbert.get_sentence_embedding_dimension() * 6
@@ -32,11 +42,23 @@ class SBERTRegressionModel(nn.Module):
         )
         
     def forward(self, sentence_list):
-        # 文章をSBERTで埋め込みベクトルに変換
-        embeddings = [self.sbert.encode(sentence, convert_to_tensor=True) for sentence in sentence_list]
+        logger.info(f"sentences = {sentence_list}")
+        inputs = self.tokenizer(sentence_list, return_tensors="pt")
+        inputs = inputs.to(self.device)
+        #outputs = self.sbert(**inputs)
+        logger.info(inputs)
+        logger.info(f"inputa={inputs['input_ids'].shape}")
+        output_vectors = self.sbert(inputs)
+        output_vectors = output_vectors.last_hidden_state
         
+
+        logger.info("last_hidden_state: " + str(output_vectors.shape))
+        token_embeddings = outputs['last_hidden_state'][:, 0, :]
+        logger.info(f"token_embeddings: {token_embeddings.shape}")
+
        # 6つのベクトルを結合 (次元を6倍にする)
-        combined_features = torch.cat(embeddings, dim=1)
+        combined_features = torch.cat(token_embeddings, dim=1)
+        logger.info(f"combined_features: {combined_features.shape}")
         
         # MLPを通してスカラー値を予測
         output = self.mlp(combined_features)
@@ -94,15 +116,17 @@ def create_sentence_groups():
     human_df = pd.read_csv(human_result_path, header=0, names=header)
     #print(human_df.head())
     
+    sentences = ""
     for _, row in human_df.iterrows():
-        sentences = []
         description = row["description"]
         scene_name = row["scene_name"]
         gt_description_list = description_dict[scene_name]
         
-        sentences.append(description)
+        description = "[SCORE] " + description
+        sentences = description
         for gt in gt_description_list:
-            sentences.append(gt)
+            gt = " [COMPARE] " + gt
+            sentences += gt
         
         if scene_name in test_scene:
             sentence_groups_test.append(sentences)
@@ -144,8 +168,8 @@ def create_sentence_groups_all():
 
 if __name__ == "__main__":
     # Sentence BERTのすべてのパラメータを更新する
-    shuffle = True
-    logger.info("FineTuning 2")
+    shuffle = False
+    logger.info("FineTuning 5")
     logger.info(f"Shuffle={shuffle}")
     start_date = datetime.datetime.now().strftime('%y-%m-%d %H-%M-%S') 
     logger.info(f"Start at {start_date}")
@@ -164,7 +188,7 @@ if __name__ == "__main__":
         param.requires_grad = True
         
     # SBERT + MLPの回帰モデルを初期化
-    model = SBERTRegressionModel(sbert_model).to(device)
+    model = SBERTRegressionModel(sbert_model, device).to(device)
 
     if shuffle == True:
         sentence_groups, labels = create_sentence_groups_all()
@@ -176,26 +200,29 @@ if __name__ == "__main__":
         )
         logger.info(f"train_idx = {train_idx}")
         logger.info(f"test_idx = {test_idx}")
-        train_logger = log_manager.createLogWriter("train2_shuffle")
-        test_logger = log_manager.createLogWriter("test2_shuffle")
+        train_logger = log_manager.createLogWriter("train5_shuffle")
+        test_logger = log_manager.createLogWriter("test5_shuffle")
         # モデルのパラメータを保存するディレクトリを作成
         save_dir = "model_checkpoints_all_shuffle"
         os.makedirs(save_dir, exist_ok=True)
     else:
         sentence_groups_train, sentence_groups_test, labels_train, labels_test = create_sentence_groups()
-        train_logger = log_manager.createLogWriter("train2")
-        test_logger = log_manager.createLogWriter("test2")
+        train_logger = log_manager.createLogWriter("train5")
+        test_logger = log_manager.createLogWriter("test5")
         # モデルのパラメータを保存するディレクトリを作成
-        save_dir = "model_checkpoints_all"
+        save_dir = "model_checkpoints_cls"
         os.makedirs(save_dir, exist_ok=True)
 
     # データセットとデータローダーを作成
     train_dataset = TextGroupDataset(sentence_groups_train, labels_train)
     test_dataset = TextGroupDataset(sentence_groups_test, labels_test)
     
-    train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
-    test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False)
+    #train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
+    #test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False)
+    train_loader = DataLoader(train_dataset, batch_size=1, shuffle=True)
+    test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False)
     
+
     # OptimizerとLossの設定
     optimizer = torch.optim.Adam(model.parameters(), lr=2e-5)
     criterion = nn.MSELoss().to(device)
@@ -207,8 +234,10 @@ if __name__ == "__main__":
         model.train()
         total_loss = 0
         
+        num = 0
         for sentence_list, labels in train_loader:  # sentence_listは6つの文章のリスト
-            #sentence_list = [sentence[0].to(device) for sentence in sentence_list]
+            logger.info(f"num={num}")
+            num += 1
             labels = labels.to(device)
 
             optimizer.zero_grad()
@@ -217,13 +246,11 @@ if __name__ == "__main__":
             total_loss += loss.item()
             loss.backward()
             optimizer.step()
-        
-        # 10エポックごとにモデルを保存
-        if (epoch + 1) % 10 == 0:
+
+        if (epoch + 1) % 100 == 0:
             logger.info(f'Epoch {epoch+1}/{epochs}, Loss: {total_loss/len(train_loader)}')
             train_logger.writeLine(f"{epoch+1},{total_loss/len(train_loader)}")
 
-        if (epoch + 1) % 100 == 0:
             # モデルの評価
             model.eval()
             total_test_loss = 0

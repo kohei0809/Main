@@ -1,5 +1,6 @@
 import os
 import datetime
+import numpy as np
 import torch
 import pandas as pd
 import torch.nn as nn
@@ -112,10 +113,40 @@ def create_sentence_groups():
 
     return sentence_groups_train, sentence_groups_test, labels_train, labels_test
 
+def create_sentence_groups_all():
+    sentence_groups = []
+    labels = []
+    gt_description_path = "./../data/scene_datasets/mp3d/Environment_Descriptions.txt"
+    human_result_path = "./human_results.csv"
+    
+    description_dict = get_description_dict(gt_description_path)
+    header = ["scene_name", "description_index", "line", "score", "description_name", "description"]
+    human_df = pd.read_csv(human_result_path, header=0, names=header)
+    #print(human_df.head())
+    
+    for _, row in human_df.iterrows():
+        sentences = []
+        description = row["description"]
+        scene_name = row["scene_name"]
+        gt_description_list = description_dict[scene_name]
+        
+        for gt in gt_description_list:
+            sentences = []
+            sentences.append(description)
+            sentences.append(gt)
+        
+            sentence_groups.append(sentences)
+            labels.append(row["score"])
+        
+    labels = torch.tensor(labels, dtype=torch.float32)
+    return sentence_groups, labels
+
 if __name__ == "__main__":
     # Sentence Bertのパラメータmo更新
     # GT descriptionは1つだけ
+    shuffle = True
     logger.info("FineTuning 4")
+    logger.info(f"Shuffle={shuffle}")
     start_date = datetime.datetime.now().strftime('%y-%m-%d %H-%M-%S') 
     logger.info(f"Start at {start_date}")
     
@@ -138,22 +169,43 @@ if __name__ == "__main__":
     # SBERT + MLPの回帰モデルを初期化
     model = SBERTRegressionModel(sbert_model).to(device)
 
-    sentence_groups_train, sentence_groups_test, labels_train, labels_test = create_sentence_groups()
+    if shuffle == True:
+        sentence_groups, labels = create_sentence_groups_all()
+        indices = np.arange(len(sentence_groups))
+        logger.info(f"indices = {len(sentence_groups)}")
+        # データセットを学習用と評価用に分割
+        sentence_groups_train, sentence_groups_test, labels_train, labels_test, train_idx, test_idx = train_test_split(
+            sentence_groups, labels, indices, test_size=0.2, random_state=42
+        )
+        logger.info(f"train_idx = {train_idx}")
+        logger.info(f"test_idx = {test_idx}")
+        train_logger = log_manager.createLogWriter("train4_shuffle")
+        test_logger = log_manager.createLogWriter("test4_shuffle")
+        index_logger = log_manager.createLogWriter("test_index_2sentences")
+        for i in test_idx:
+            index_logger.writeLine(str(i))
+        
+        # モデルのパラメータを保存するディレクトリを作成
+        save_dir = "model_checkpoints_2sentences_all_shuffle"
+        os.makedirs(save_dir, exist_ok=True)
+    else:
+        sentence_groups_train, sentence_groups_test, labels_train, labels_test = create_sentence_groups()
+        train_logger = log_manager.createLogWriter("train4")
+        test_logger = log_manager.createLogWriter("test4")
+        # モデルのパラメータを保存するディレクトリを作成
+        save_dir = "model_checkpoints_2sentences_all"
+        os.makedirs(save_dir, exist_ok=True)
 
     # データセットとデータローダーを作成
     train_dataset = TextGroupDataset(sentence_groups_train, labels_train)
     test_dataset = TextGroupDataset(sentence_groups_test, labels_test)
     
-    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
-    test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
+    train_loader = DataLoader(train_dataset, batch_size=128, shuffle=True)
+    test_loader = DataLoader(test_dataset, batch_size=128, shuffle=False)
     
     # OptimizerとLossの設定
     optimizer = torch.optim.Adam(model.parameters(), lr=2e-5)
     criterion = nn.MSELoss().to(device)
-    
-    # モデルのパラメータを保存するディレクトリを作成
-    save_dir = "model_checkpoints_2sentences_all"
-    os.makedirs(save_dir, exist_ok=True)
     
     # トレーニングとモデル保存
     epochs = 10000
@@ -172,13 +224,11 @@ if __name__ == "__main__":
             total_loss += loss.item()
             loss.backward()
             optimizer.step()
-        
-        # 10エポックごとにモデルを保存
-        if (epoch + 1) % 10 == 0:
+            
+        if (epoch + 1) % 100 == 0:
             logger.info(f'Epoch {epoch+1}/{epochs}, Loss: {total_loss/len(train_loader)}')
             train_logger.writeLine(f"{epoch+1},{total_loss/len(train_loader)}")
 
-        if (epoch + 1) % 100 == 0:
             # モデルの評価
             model.eval()
             total_test_loss = 0

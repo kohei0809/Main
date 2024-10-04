@@ -4,7 +4,7 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-# ある程度多くの写真を探索中は保持し、探索終了後に取捨選択する 
+# PPO3のキャプションバージョン
 
 import os
 import time
@@ -100,8 +100,8 @@ class SBERTRegressionModel(nn.Module):
         return output
 
 
-@baseline_registry.register_trainer(name="oracle3")
-class PPOTrainerO3(BaseRLTrainerOracle):
+@baseline_registry.register_trainer(name="oracle4")
+class PPOTrainerO4(BaseRLTrainerOracle):
     # reward is added only from area reward
     r"""Trainer class for PPO algorithm
     Paper: https://arxiv.org/abs/1707.06347.
@@ -130,9 +130,9 @@ class PPOTrainerO3(BaseRLTrainerOracle):
         self.bert_model = SentenceTransformer('all-MiniLM-L6-v2')
         
         # lavisモデルの読み込み
-        #self.lavis_model, self.vis_processors, _ = load_model_and_preprocess(name="blip_caption", model_type="base_coco", is_eval=True, device=self.device)
+        self.lavis_model, self.vis_processors, _ = load_model_and_preprocess(name="blip_caption", model_type="base_coco", is_eval=True, device=self.device)
         self.bert_model.to(self.device)
-        #self.lavis_model.to(self.device)
+        self.lavis_model.to(self.device)
 
         # Load the clip model
         self.clip_model, self.preprocess = clip.load('ViT-B/32', self.device)
@@ -570,7 +570,7 @@ class PPOTrainerO3(BaseRLTrainerOracle):
                     pas_list.append(pas)
                     
                 similarity[n] = sum(similarity_list) / len(similarity_list)
-                pic_sim[n] = self._calculate_pic_sim(self._taken_picture_list[n])                
+                #pic_sim[n] = self._calculate_pic_sim(self._taken_picture_list[n])                
 
                 bleu_score[n] = sum(bleu_list) / len(bleu_list)
                 rouge_1_score[n] = sum(rouge_1_list) / len(rouge_1_list)
@@ -690,7 +690,7 @@ class PPOTrainerO3(BaseRLTrainerOracle):
         Returns:
             None
         """
-        logger.info("########### PPO3 ##############")
+        logger.info("########### PPO4 ##############")
 
         self.log_manager = log_manager
         
@@ -1173,8 +1173,11 @@ class PPOTrainerO3(BaseRLTrainerOracle):
 
         image_descriptions = []
         for image in image_list:
+            """
             response = self.generate_response(image, input_text1)
             response = response[4:-4]
+            """
+            response = self._create_caption(image)
             image_descriptions.append(response)
 
         input_text2 = "# Instructions\n"\
@@ -1575,7 +1578,7 @@ class PPOTrainerO3(BaseRLTrainerOracle):
                         pas_list.append(pas)
                         
                     similarity[n] = sum(similarity_list) / len(similarity_list)
-                    pic_sim[n] = self._calculate_pic_sim(self._taken_picture_list[n])                
+                    #pic_sim[n] = self._calculate_pic_sim(self._taken_picture_list[n])                
                     
                     bleu_score[n] = sum(bleu_list) / len(bleu_list)
                     rouge_1_score[n] = sum(rouge_1_list) / len(rouge_1_list)
@@ -1601,7 +1604,7 @@ class PPOTrainerO3(BaseRLTrainerOracle):
                     current_episode_hes_score[n] += hes_score[n]
                     
                     # save description
-                    out_path = os.path.join("log/" + date + "/eval3/description.txt")
+                    out_path = os.path.join("log/" + date + "/eval4/description.txt")
                     with open(out_path, 'a') as f:
                         # print関数でファイルに出力する
                         print(str(current_episodes[n].scene_id[-15:-4]) + "_" + str(_episode_id), file=f)
@@ -1938,7 +1941,7 @@ class PPOTrainerO3(BaseRLTrainerOracle):
                         pas_list.append(pas)
                         
                     similarity[n] = sum(similarity_list) / len(similarity_list)
-                    pic_sim[n] = self._calculate_pic_sim(self._taken_picture_list[n])                
+                    #pic_sim[n] = self._calculate_pic_sim(self._taken_picture_list[n])                
                     
                     bleu_score[n] = sum(bleu_list) / len(bleu_list)
                     rouge_1_score[n] = sum(rouge_1_list) / len(rouge_1_list)
@@ -1963,7 +1966,7 @@ class PPOTrainerO3(BaseRLTrainerOracle):
                     current_episode_hes_score[n] += hes_score[n]
                     
                     # save description
-                    out_path = os.path.join("log/" + date + "/random3/description.txt")
+                    out_path = os.path.join("log/" + date + "/random4/description.txt")
                     with open(out_path, 'a') as f:
                         # print関数でファイルに出力する
                         print(str(current_episodes[n].scene_id[-15:-4]) + "_" + str(_episode_id), file=f)

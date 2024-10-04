@@ -52,5 +52,5 @@ TASK:
 DATASET:
   TYPE: MaximumInfo-v1
   SPLIT: train
-  DATA_PATH: "data/datasets/v3/maximum/{split}/{split}.json.gz"
+  DATA_PATH: "data/datasets/maximuminfo/v3/{split}/{split}.json.gz"
   SCENES_DIR: "data/scene_datasets/"

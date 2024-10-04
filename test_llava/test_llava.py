@@ -1,3 +1,4 @@
+import os
 import torch
 #from LLaVA.llava.constants import IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
 from llava.constants import IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
@@ -87,29 +88,53 @@ def generate_response(image, input_text, model_path):
 
 def human_test():
     user_list = ["matsumoto", "kondo", "nakamura", "aizawa", "edward"]
+    user_list = ["nakamura", "aizawa", "edward"]
     image_folder = "/gs/fs/tga-aklab/matsumoto/Main/result_images"
     #model_path = "/gs/fs/tga-aklab/matsumoto/Main/model/llava-v1.5-7b/"
     
     for user_name in user_list:
         for i in range(11):
-            image_file = f"{image_folder}/{user_name}/result_{i}.png"
-            print(image_file)
-            #input_text = "You are an excellent property writer. This picture consists of 10 pictures arranged in one picture, 5 horizontally and 2 vertically on one building. In addition, a black line separates the pictures from each other. From each picture, you should understand the details of this building's environment and describe this building's environment in detail in the form of a summary of these pictures. At this point, do not describe each picture one at a time, but rather in a summarized form. Also note that each picture was taken in a separate location, so successive pictures are not positionally close. Additionally, do not mention which picture you are quoting from or the black line separating each picture."
-            input_text = "<Instructions>\n"\
+            image_dir = f"{image_folder}/{user_name}/scene_{i}/"
+            image_result_file = image_dir + f"result_{i}.png"
+            print(image_result_file)
+            result_image = load_image(image_result_file)
+
+            input_text1 = "# Instructions\n"\
                     "You are an excellent property writer.\n"\
-                    "The input image consists of 10 pictures of a building, 5 vertically and 2 horizontally, within a single picture.\n"\
-                    "In addition, each picture is separated by a black line.\n"\
-                    "\n"\
-                    "From each picture, understand the details of this building's environment and summarize them in the form of a detailed description of this building's environment, paying attention to the <Notes>.\n"\
-                    "In doing so, please also consider the location of each picture as indicated by <Location Information>.\n"\
-                    "\n\n"\
-                    "<Notes>\n"\
-                    "・Note that adjacent pictures are not close in location.\n"\
-                    "・When describing the environment, do not mention whether it was taken from that picture or the black line separating each picture.\n"\
-                    "・Write a description of approximately 100 words in summary form without mentioning each individual picture."
-        
-            image = load_image(image_file)
-            response = generate_response(image, input_text, model_path)     
+                    "Please understand the details of the environment of this building from the pictures you have been given and explain what it is like to be in this environment as a person in this environment."
+
+            image_descriptions = []
+            for j in range(10):
+                image_file = image_dir + f"{j}.png"
+                print(image_file)
+                if os.path.isfile(image_file) == False:
+                    print("No File")
+                    break
+            
+                image = load_image(image_file)
+                response = generate_response(image, input_text1, model_path)
+                response = response[4:-4]
+                image_descriptions.append(response)
+
+            input_text2 = "# Instructions\n"\
+                        "You are an excellent property writer.\n"\
+                        "# Each_Description is a description of the building in the pictures you have entered. Please summarize these and write a description of the entire environment as if you were a person in this environment.\n"\
+                        "\n"\
+                        "# Each_Description\n"
+            input_text3 = "# Notes\n"\
+                        "・Please summarize # Each_Description and write a description of the entire environment as if you were a person in this environment.\n"\
+                        "・Please write approximately 100 words.\n"\
+                        "・Please note that the sentences in # Each_Description are not necessarily close in distance."
+
+            image_num = len(image_descriptions)
+            for j in range(10):
+                desc_num = j % image_num
+                each_description = "・" + image_descriptions[desc_num] + "\n"
+                input_text2 += each_description
+
+            input_text = input_text2 + "\n" + input_text3
+
+            response = generate_response(result_image, input_text, model_path)     
             print(f"A:{response[4:-4]}")
             print("------------------------------")   
 

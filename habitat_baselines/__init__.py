@@ -8,5 +8,6 @@ from habitat_baselines.common.base_trainer import BaseRLTrainerOracle, BaseTrain
 from habitat_baselines.rl.ppo.ppo_trainer import PPOTrainerO, RolloutStorageOracle
 from habitat_baselines.rl.ppo.ppo_trainer2 import PPOTrainerO2
 from habitat_baselines.rl.ppo.ppo_trainer3 import PPOTrainerO3
+from habitat_baselines.rl.ppo.ppo_trainer4 import PPOTrainerO4
 
-__all__ = ["BaseTrainer", "BaseRLTrainerOracle", "PPOTrainerO", "PPOTrainerO2", "PPOTrainerO3", "RolloutStorage", "RolloutStorageOracle"]
+__all__ = ["BaseTrainer", "BaseRLTrainerOracle", "PPOTrainerO", "PPOTrainerO2", "PPOTrainerO3", "PPOTrainerO4", "RolloutStorage", "RolloutStorageOracle"]

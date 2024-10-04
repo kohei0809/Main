@@ -2,7 +2,7 @@
 #$ -cwd
 #$ -l node_f=1
 #$ -j y
-#$ -l h_rt=8:00:00
+#$ -l h_rt=15:00:00
 #$ -o output/o.$JOB_ID
 
 . /etc/profile.d/modules.sh
@@ -15,4 +15,4 @@ pwd
 . /home/7/ur02047/anaconda3/etc/profile.d/conda.sh
 conda activate habitat2
 
-CUDA_LAUNCH_BLOCKING=1 python run.py --run-type random2
+CUDA_LAUNCH_BLOCKING=1 python run.py --run-type random3

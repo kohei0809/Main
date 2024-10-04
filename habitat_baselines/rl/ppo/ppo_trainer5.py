@@ -4,7 +4,7 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-# ある程度多くの写真を探索中は保持し、探索終了後に取捨選択する 
+# 探索のみの報酬
 
 import os
 import time
@@ -100,8 +100,8 @@ class SBERTRegressionModel(nn.Module):
         return output
 
 
-@baseline_registry.register_trainer(name="oracle3")
-class PPOTrainerO3(BaseRLTrainerOracle):
+@baseline_registry.register_trainer(name="oracle5")
+class PPOTrainerO5(BaseRLTrainerOracle):
     # reward is added only from area reward
     r"""Trainer class for PPO algorithm
     Paper: https://arxiv.org/abs/1707.06347.
@@ -129,38 +129,12 @@ class PPOTrainerO3(BaseRLTrainerOracle):
         # Sentence-BERTモデルの読み込み
         self.bert_model = SentenceTransformer('all-MiniLM-L6-v2')
         
+        """
         # lavisモデルの読み込み
-        #self.lavis_model, self.vis_processors, _ = load_model_and_preprocess(name="blip_caption", model_type="base_coco", is_eval=True, device=self.device)
+        self.lavis_model, self.vis_processors, _ = load_model_and_preprocess(name="blip_caption", model_type="base_coco", is_eval=True, device=self.device)
         self.bert_model.to(self.device)
-        #self.lavis_model.to(self.device)
-
-        # Load the clip model
-        self.clip_model, self.preprocess = clip.load('ViT-B/32', self.device)
-        self._select_threthould = 0.9
-        #self._select_threthould = 0.8
-
-        # LLaVA model
-        load_4bit = True
-        load_8bit = not load_4bit
-        disable_torch_init()
-        model_path = "liuhaotian/llava-v1.5-13b"
-        self.llava_model_name = get_model_name_from_path(model_path)
-        self.tokenizer, self.llava_model, self.llava_image_processor, _ = load_pretrained_model(model_path, None, self.llava_model_name, load_8bit, load_4bit)
-        
-        # ファイルを読み込んで行ごとにリストに格納する
-        with open('data/scene_datasets/mp3d/Environment_Descriptions.txt', 'r') as file:
-            lines = file.readlines()
-
-            # scene id と文章を抽出してデータフレームに変換する
-            self.description_dict = {}
-            for i in range(0, len(lines), 7):
-                descriptions = []
-                scene_id = lines[i].strip()
-                desc_ind = i+2
-                for j in range(5):
-                    descriptions.append(lines[desc_ind+j].strip())
-                self.description_dict[scene_id] = descriptions
-
+        self.lavis_model.to(self.device)
+        """
 
         model_path = f"/gs/fs/tga-aklab/matsumoto/Main/SentenceBert_FineTuning/model_checkpoints_all/model_epoch_10000.pth"
         # SBERTモデルのロード
@@ -570,7 +544,7 @@ class PPOTrainerO3(BaseRLTrainerOracle):
                     pas_list.append(pas)
                     
                 similarity[n] = sum(similarity_list) / len(similarity_list)
-                pic_sim[n] = self._calculate_pic_sim(self._taken_picture_list[n])                
+                #pic_sim[n] = self._calculate_pic_sim(self._taken_picture_list[n])                
 
                 bleu_score[n] = sum(bleu_list) / len(bleu_list)
                 rouge_1_score[n] = sum(rouge_1_list) / len(rouge_1_list)
@@ -690,7 +664,7 @@ class PPOTrainerO3(BaseRLTrainerOracle):
         Returns:
             None
         """
-        logger.info("########### PPO3 ##############")
+        logger.info("########### PPO4 ##############")
 
         self.log_manager = log_manager
         
@@ -1173,8 +1147,11 @@ class PPOTrainerO3(BaseRLTrainerOracle):
 
         image_descriptions = []
         for image in image_list:
+            """
             response = self.generate_response(image, input_text1)
             response = response[4:-4]
+            """
+            response = self._create_caption(image)
             image_descriptions.append(response)
 
         input_text2 = "# Instructions\n"\
@@ -1394,6 +1371,33 @@ class PPOTrainerO3(BaseRLTrainerOracle):
         self._taken_picture_list = []
         for i in range(self.envs.num_envs):
             self._taken_picture_list.append([])
+
+        # Load the clip model
+        self.clip_model, self.preprocess = clip.load('ViT-B/32', self.device)
+        self._select_threthould = 0.9
+        #self._select_threthould = 0.8
+
+        # LLaVA model
+        load_4bit = True
+        load_8bit = not load_4bit
+        disable_torch_init()
+        model_path = "liuhaotian/llava-v1.5-13b"
+        self.llava_model_name = get_model_name_from_path(model_path)
+        self.tokenizer, self.llava_model, self.llava_image_processor, _ = load_pretrained_model(model_path, None, self.llava_model_name, load_8bit, load_4bit)
+        
+        # ファイルを読み込んで行ごとにリストに格納する
+        with open('data/scene_datasets/mp3d/Environment_Descriptions.txt', 'r') as file:
+            lines = file.readlines()
+
+            # scene id と文章を抽出してデータフレームに変換する
+            self.description_dict = {}
+            for i in range(0, len(lines), 7):
+                descriptions = []
+                scene_id = lines[i].strip()
+                desc_ind = i+2
+                for j in range(5):
+                    descriptions.append(lines[desc_ind+j].strip())
+                self.description_dict[scene_id] = descriptions
         
         observations = self.envs.reset()
         batch = batch_obs(observations, device=self.device)
@@ -1575,7 +1579,7 @@ class PPOTrainerO3(BaseRLTrainerOracle):
                         pas_list.append(pas)
                         
                     similarity[n] = sum(similarity_list) / len(similarity_list)
-                    pic_sim[n] = self._calculate_pic_sim(self._taken_picture_list[n])                
+                    #pic_sim[n] = self._calculate_pic_sim(self._taken_picture_list[n])                
                     
                     bleu_score[n] = sum(bleu_list) / len(bleu_list)
                     rouge_1_score[n] = sum(rouge_1_list) / len(rouge_1_list)
@@ -1601,7 +1605,7 @@ class PPOTrainerO3(BaseRLTrainerOracle):
                     current_episode_hes_score[n] += hes_score[n]
                     
                     # save description
-                    out_path = os.path.join("log/" + date + "/eval3/description.txt")
+                    out_path = os.path.join("log/" + date + "/eval4/description.txt")
                     with open(out_path, 'a') as f:
                         # print関数でファイルに出力する
                         print(str(current_episodes[n].scene_id[-15:-4]) + "_" + str(_episode_id), file=f)
@@ -1938,7 +1942,7 @@ class PPOTrainerO3(BaseRLTrainerOracle):
                         pas_list.append(pas)
                         
                     similarity[n] = sum(similarity_list) / len(similarity_list)
-                    pic_sim[n] = self._calculate_pic_sim(self._taken_picture_list[n])                
+                    #pic_sim[n] = self._calculate_pic_sim(self._taken_picture_list[n])                
                     
                     bleu_score[n] = sum(bleu_list) / len(bleu_list)
                     rouge_1_score[n] = sum(rouge_1_list) / len(rouge_1_list)
@@ -1963,7 +1967,7 @@ class PPOTrainerO3(BaseRLTrainerOracle):
                     current_episode_hes_score[n] += hes_score[n]
                     
                     # save description
-                    out_path = os.path.join("log/" + date + "/random3/description.txt")
+                    out_path = os.path.join("log/" + date + "/random4/description.txt")
                     with open(out_path, 'a') as f:
                         # print関数でファイルに出力する
                         print(str(current_episodes[n].scene_id[-15:-4]) + "_" + str(_episode_id), file=f)

@@ -4,51 +4,104 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-import json
+# Similarityではなく、HES Scoreを報酬として与える
+
 import os
 import time
-import pathlib
-import sys
 from collections import defaultdict, deque
 from typing import Any, Dict, List, Optional
-from PIL import Image
+from PIL import Image, ImageDraw
 import pandas as pd
 import random
+import csv
+from collections import Counter
 
-from einops import rearrange
-from matplotlib import pyplot as plt
-import math
 import numpy as np
 import torch
-import torch.nn.functional as F
+import torch.nn as nn
 import tqdm
 from torch.optim.lr_scheduler import LambdaLR
-import clip
 
+import clip
 from sentence_transformers import SentenceTransformer, util
 from lavis.models import load_model_and_preprocess
 
 from habitat import Config
 from habitat.core.logging import logger
-from habitat.utils.visualizations.utils import observations_to_image
+from habitat.utils.visualizations.utils import observations_to_image, explored_to_image, create_each_image
 from habitat_baselines.common.base_trainer import BaseRLTrainerOracle
 from habitat_baselines.common.baseline_registry import baseline_registry
-from habitat_baselines.common.env_utils import construct_envs
 from habitat_baselines.common.environments import get_env_class
+from habitat_baselines.common.env_utils import construct_envs
 from habitat_baselines.common.rollout_storage import RolloutStorageOracle
 from habitat_baselines.common.utils import (
     batch_obs,
     generate_video,
     linear_decay,
 )
-from habitat_baselines.rl.ppo import PPOOracle, BaselinePolicyOracle, ProposedPolicyOracle
+from habitat_baselines.rl.ppo import PPOOracle, ProposedPolicyOracle
 from log_manager import LogManager
 from log_writer import LogWriter
 from habitat.utils.visualizations import fog_of_war, maps
 
-# TAKE_PICTUREごとにsimilarityを計算して報酬に加える
+from llava.constants import IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
+from llava.conversation import conv_templates, SeparatorStyle
+from llava.model.builder import load_pretrained_model
+from llava.utils import disable_torch_init
+from llava.mm_utils import tokenizer_image_token, get_model_name_from_path
+from transformers import TextStreamer
+
+import nltk
+from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
+from rouge_score import rouge_scorer
+from nltk.translate.meteor_score import meteor_score as Meteor_score
+from nltk.corpus import wordnet
+from nltk import word_tokenize, pos_tag
+from nltk.corpus import stopwords
+from nltk.stem import WordNetLemmatizer
+# 必要なNLTKのリソースをダウンロード
+nltk.download('punkt')
+nltk.download('averaged_perceptron_tagger')
+nltk.download('wordnet')
+nltk.download('omw-1.4')
+nltk.download('stopwords')
+
+
+# SBERT + MLPによる回帰モデルの定義
+class SBERTRegressionModel(nn.Module):
+    def __init__(self, sbert_model, hidden_size1=512, hidden_size2=256, hidden_size3=128):
+        super(SBERTRegressionModel, self).__init__()
+        self.sbert = sbert_model
+        
+        # 6つの埋め込みベクトルを結合するため、入力サイズは6倍に
+        embedding_size = self.sbert.get_sentence_embedding_dimension() * 6
+        
+        # 多層MLPの構造を定義
+        self.mlp = nn.Sequential(
+            nn.Linear(embedding_size, hidden_size1),  # 結合ベクトルから第1隠れ層
+            nn.ReLU(),  # 活性化関数
+            nn.Linear(hidden_size1, hidden_size2),  # 第2隠れ層
+            nn.ReLU(),
+            nn.Linear(hidden_size2, hidden_size3),  # 第3隠れ層
+            nn.ReLU(),
+            nn.Linear(hidden_size3, 1)  # 隠れ層からスカラー値出力
+        )
+        
+    def forward(self, sentence_list):
+        # 文章をSBERTで埋め込みベクトルに変換
+        embeddings = [self.sbert.encode(sentence, convert_to_tensor=True).unsqueeze(0) for sentence in sentence_list]
+
+        # 6つのベクトルを結合 (次元を6倍にする)
+        combined_features = torch.cat(embeddings, dim=1)
+        
+        # MLPを通してスカラー値を予測
+        output = self.mlp(combined_features)
+        return output
+
+
 @baseline_registry.register_trainer(name="oracle")
 class PPOTrainerO(BaseRLTrainerOracle):
+    # reward is added only from area reward
     r"""Trainer class for PPO algorithm
     Paper: https://arxiv.org/abs/1707.06347.
     """
@@ -65,18 +118,59 @@ class PPOTrainerO(BaseRLTrainerOracle):
         self._encoder = None
         
         self._num_picture = config.TASK_CONFIG.TASK.PICTURE.NUM_PICTURE
-        #撮った写真のRGB画像を保存
-        #self._taken_picture = []
-        #撮った写真のsaliencyとrange_mapを保存
-        self._taken_picture_list = []
+
+        self.device = (
+            torch.device("cuda", self.config.TORCH_GPU_ID)
+            if torch.cuda.is_available()
+            else torch.device("cpu")
+        )
         
-        # 1回のCIを保存
-        #self._observed_object_ci_one = []
-        #self._target_index_list = []
-        #self._taken_index_list = []
+        # Sentence-BERTモデルの読み込み
+        self.bert_model = SentenceTransformer('all-MiniLM-L6-v2')
+        self.bert_model.to(self.device)
+
+        # lavisモデルの読み込み
+        #self.lavis_model, self.vis_processors, _ = load_model_and_preprocess(name="blip_caption", model_type="base_coco", is_eval=True, device=self.device)
+        #self.lavis_model.to(self.device)
+
+        # Load the clip model
+        self.clip_model, self.preprocess = clip.load('ViT-B/32', self.device)
+        self._select_threthould = 0.9
+        #self._select_threthould = 0.8
+
+        # LLaVA model
+        load_4bit = True
+        load_8bit = not load_4bit
+        disable_torch_init()
+        model_path = "liuhaotian/llava-v1.5-13b"
+        self.llava_model_name = get_model_name_from_path(model_path)
+        self.tokenizer, self.llava_model, self.llava_image_processor, _ = load_pretrained_model(model_path, None, self.llava_model_name, load_8bit, load_4bit)
         
-        # 1回のCIの閾値
-        #self.TARGET_THRESHOLD_ONE = 20
+        # ファイルを読み込んで行ごとにリストに格納する
+        with open('data/scene_datasets/mp3d/Environment_Descriptions.txt', 'r') as file:
+            lines = file.readlines()
+
+            # scene id と文章を抽出してデータフレームに変換する
+            self.description_dict = {}
+            for i in range(0, len(lines), 7):
+                descriptions = []
+                scene_id = lines[i].strip()
+                desc_ind = i+2
+                for j in range(5):
+                    descriptions.append(lines[desc_ind+j].strip())
+                self.description_dict[scene_id] = descriptions
+
+
+        model_path = f"/gs/fs/tga-aklab/matsumoto/Main/SentenceBert_FineTuning/model_checkpoints_all/model_epoch_10000.pth"
+        # SBERTモデルのロード
+        sbert_model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
+        self.eval_model = SBERTRegressionModel(sbert_model).to(self.device)
+        self.eval_model.load_state_dict(torch.load(model_path))
+        self.eval_model.eval() 
+        logger.info(f"Eval Model loaded from {model_path}")
+
+        # 単語のステミング処理
+        self.lemmatizer = WordNetLemmatizer()
 
 
     def _setup_actor_critic_agent(self, ppo_cfg: Config) -> None:
@@ -95,7 +189,6 @@ class PPOTrainerO(BaseRLTrainerOracle):
             observation_space=self.envs.observation_spaces[0],
             action_space=self.envs.action_spaces[0],
             hidden_size=ppo_cfg.hidden_size,
-            #goal_sensor_uuid=self.config.TASK_CONFIG.TASK.GOAL_SENSOR_UUID,
             device=self.device,
             object_category_embedding_size=self.config.RL.OBJECT_CATEGORY_EMBEDDING_SIZE,
             previous_action_embedding_size=self.config.RL.PREVIOUS_ACTION_EMBEDDING_SIZE,
@@ -118,9 +211,7 @@ class PPOTrainerO(BaseRLTrainerOracle):
             use_normalized_advantage=ppo_cfg.use_normalized_advantage,
         )
 
-    def save_checkpoint(
-        self, file_name: str, extra_state: Optional[Dict] = None
-    ) -> None:
+    def save_checkpoint(self, file_name: str, extra_state: Optional[Dict] = None) -> None:
         r"""Save checkpoint with specified name.
 
         Args:
@@ -136,9 +227,7 @@ class PPOTrainerO(BaseRLTrainerOracle):
         if extra_state is not None:
             checkpoint["extra_state"] = extra_state
 
-        torch.save(
-            checkpoint, os.path.join(self.config.CHECKPOINT_FOLDER, file_name)
-        )
+        torch.save(checkpoint, os.path.join(self.config.CHECKPOINT_FOLDER, file_name))
 
     def load_checkpoint(self, checkpoint_path: str, *args, **kwargs) -> Dict:
         r"""Load checkpoint of specified path as a dict.
@@ -156,14 +245,12 @@ class PPOTrainerO(BaseRLTrainerOracle):
     METRICS_BLACKLIST = {"top_down_map", "collisions.is_collision", "traj_metrics", "saliency"}
 
     @classmethod
-    def _extract_scalars_from_info(
-        cls, info: Dict[str, Any]
-    ) -> Dict[str, float]:
+    def _extract_scalars_from_info(cls, info: Dict[str, Any]) -> Dict[str, float]:
         result = {}
         for k, v in info.items():
             if k in cls.METRICS_BLACKLIST:
                 continue
-                
+
             if isinstance(v, dict):
                 result.update(
                     {
@@ -182,10 +269,7 @@ class PPOTrainerO(BaseRLTrainerOracle):
         return result
 
     @classmethod
-    def _extract_scalars_from_infos(
-        cls, infos: List[Dict[str, Any]]
-    ) -> Dict[str, List[float]]:
-
+    def _extract_scalars_from_infos(cls, infos: List[Dict[str, Any]]) -> Dict[str, List[float]]:
         results = defaultdict(list)
         for i in range(len(infos)):
             for k, v in cls._extract_scalars_from_info(infos[i]).items():
@@ -203,9 +287,8 @@ class PPOTrainerO(BaseRLTrainerOracle):
     def create_description(self, picture_list):
         # captionを連結してdescriptionを生成する
         description = ""
-        
         for i in range(len(picture_list)):
-            description += (picture_list[i][3] + ". ")
+            description += (self._create_caption(picture_list[i][1]) + ". ")
             
         return description
     
@@ -217,7 +300,7 @@ class PPOTrainerO(BaseRLTrainerOracle):
     def _create_new_image_embedding(self, obs):
         image = Image.fromarray(obs)
         image = self.preprocess(image)
-        image = torch.tensor(image).to(self.device).unsqueeze(0)
+        image = torch.tensor(image).clone().detach().to(self.device).unsqueeze(0)
         embetting = self.clip_model.encode_image(image).float()
         return embetting
 
@@ -230,29 +313,6 @@ class PPOTrainerO(BaseRLTrainerOracle):
         sentence_sim = util.pytorch_cos_sim(embedding1, embedding2).item()
     
         return sentence_sim
-    
-    def _cal_remove_index(self, picture_list, new_emmbedding):
-        # 削除する写真を決める
-        # 他のsyasinnとの類似度を計算し、合計が最大のものを削除
-        
-        sim_list = [[-10 for _ in range(len(picture_list)+1)] for _ in range(len(picture_list)+1)]
-        sim_list[len(picture_list)][len(picture_list)] = 0.0
-        for i in range(len(picture_list)):
-            emd = picture_list[i][2]
-            sim_list[i][len(picture_list)] = util.pytorch_cos_sim(emd, new_emmbedding).item()
-            sim_list[len(picture_list)][i] = sim_list[i][len(picture_list)]
-            for j in range(i, len(picture_list)):
-                if i == j:
-                    sim_list[i][j] = 0.0
-                    continue
-                    
-                #logger.info(f"len: {len(picture_list)}, i: {i}, j: {j}")
-                sim_list[i][j] = util.pytorch_cos_sim(emd, picture_list[j][2]).item()
-                sim_list[j][i] = sim_list[i][j]
-                
-        total_sim = [sum(similarity_list) for similarity_list in sim_list]
-        remove_index = total_sim.index(max(total_sim))
-        return remove_index
 
     def _calculate_pic_sim(self, picture_list):
         if len(picture_list) <= 1:
@@ -261,21 +321,85 @@ class PPOTrainerO(BaseRLTrainerOracle):
         sim_list = [[-10 for _ in range(len(picture_list))] for _ in range(len(picture_list))]
 
         for i in range(len(picture_list)):
-            emd = picture_list[i][2]
+            emd = self._create_new_image_embedding(picture_list[i][1])
             for j in range(i, len(picture_list)):
                 if i == j:
                     sim_list[i][j] = 0.0
                     continue
-                    
-                sim_list[i][j] = util.pytorch_cos_sim(emd, picture_list[j][2]).item()
+                emd2 = self._create_new_image_embedding(picture_list[j][1])
+                sim_list[i][j] = util.pytorch_cos_sim(emd, emd2).item()
                 sim_list[j][i] = sim_list[i][j]
                 
         total_sim = np.sum(sim_list)
         total_sim /= (len(picture_list)*(len(picture_list)-1))
         return total_sim
+
+    def _load_subgoal_list(self, current_episodes, n, semantic_scene_df):
+        self.subgoal_list[n] = []
+        self.subgoal_num_list[n] = []
+        scene_name = current_episodes[n].scene_id[-15:-4]
+        
+        """
+        file_path = f"/gs/fs/tga-aklab/matsumoto/Main/data/scene_datasets/mp3d/{scene_name}/pickup_object.csv"
+        with open(file_path, mode="r", newline="") as f:
+            reader = csv.reader(f)
+            for row in reader:
+                self.subgoal_list[n].append(int(row[2]))
+                self.subgoal_num_list[n].append(0)
+        """
+        category_file_path = f"/gs/fs/tga-aklab/matsumoto/Main/data/scene_datasets/mp3d/{scene_name}/category.txt"
+        with open(category_file_path, mode='r') as f:
+            content = f.read()
+            object_names = content.split(',')
+            for _, row in semantic_scene_df.iterrows():
+                if row['object_name'] in object_names:
+                    if row['id'] not in self.subgoal_list[n]:
+                        self.subgoal_list[n].append(row['id'])
+                        self.subgoal_num_list[n].append(0)
+
+        #logger.info("########## load_subgoal: " + scene_name + ", " + str(len(self.subgoal_list[n])) + "###########")
+
+    def _calculate_subgoal_reward(self, semantic_obs, n):
+        H, W = semantic_obs.shape
+        threshold = H*W*0.05
+        r = 0.0
+        subgoals = np.array(self.subgoal_list[n])
+        if subgoals.size == 0:
+            return 0.0
+
+        flat_obs = semantic_obs.ravel()
+        obs_counter = Counter(flat_obs)
+
+        subgoal_counts = np.zeros(len(subgoals), dtype=int)
+        for idx, subgoal in enumerate(subgoals):
+            subgoal_counts[idx] = obs_counter[subgoal]
+
+        for i in range(len(subgoal_counts)):
+            if subgoal_counts[i] > threshold:
+                if self.subgoal_num_list[n][i] < self.threshold_subgoal:
+                    r += self.each_subgoal_reward
+                    self.subgoal_num_list[n][i] += 1
+
+        return r
+
                 
     def _collect_rollout_step(
-        self, rollouts, current_episode_reward, current_episode_exp_area, current_episode_similarity, current_episode_picsim, current_episode_each_sim, current_episode_sum_saliency, running_episode_stats
+        self, 
+        rollouts, 
+        current_episode_reward, 
+        current_episode_exp_area, 
+        current_episode_picture_value, 
+        current_episode_similarity, 
+        current_episode_picsim, 
+        current_episode_subgoal_reward, 
+        current_episode_bleu_score,
+        current_episode_rouge_1_score,
+        current_episode_rouge_2_score,
+        current_episode_rouge_L_score,
+        current_episode_meteor_score,
+        current_episode_pas_score,
+        current_episode_hes_score,
+        running_episode_stats
     ):
         pth_time = 0.0
         env_time = 0.0
@@ -312,180 +436,62 @@ class PPOTrainerO(BaseRLTrainerOracle):
         batch = batch_obs(observations, device=self.device)
         
         reward = []
-        saliency = []
+        pic_val = []
+        picture_value = []
         similarity = []
         pic_sim = []
         exp_area = [] # 探索済みのエリア()
-        exp_area_pre = []
-        fog_of_war_map = []
-        top_down_map = [] 
-        each_sim = []
-        sum_saliency = []
+        semantic_obs = []
+        subgoal_reward = []
+        bleu_score = []
+        rouge_1_score = []
+        rouge_2_score = []
+        rouge_L_score = []
+        meteor_score = []
+        pas_score = []
+        hes_score = []
         n_envs = self.envs.num_envs
-        for i in range(n_envs):
-            reward.append(rewards[i][0])
-            saliency.append(rewards[i][1])
+        for n in range(n_envs):
+            reward.append(rewards[n][0])
+            pic_val.append(rewards[n][1])
+            picture_value.append(0)
             similarity.append(0)
             pic_sim.append(0)
-            exp_area.append(rewards[i][2]-rewards[i][3])
-            exp_area_pre.append(rewards[i][3])
-            fog_of_war_map.append(infos[i]["picture_range_map"]["fog_of_war_mask"])
-            top_down_map.append(infos[i]["picture_range_map"]["map"])
-            each_sim.append(0)
-            sum_saliency.append(0)
+            exp_area.append(rewards[n][2])
+            semantic_obs.append(observations[n]["semantic"])
+            subgoal_reward.append(0)
+            bleu_score.append(0)
+            rouge_1_score.append(0)
+            rouge_2_score.append(0)
+            rouge_L_score.append(0)
+            meteor_score.append(0)
+            pas_score.append(0)
+            hes_score.append(0)
             
         current_episodes = self.envs.current_episodes()
         for n in range(len(observations)):
-            #TAKE_PICTUREが呼び出されたかを検証
-            if saliency[n] == -1:
-                continue
-
-            # 2回連続でTAKE_PICTUREをした場合は保存しない
-            if rollouts.prev_actions[rollouts.step][n] == actions[n]:
-                continue
-
-            # 今回撮ったpicture(p_n)が保存してあるpicture(p_k)とかぶっているkを保存
-            cover_list = [] 
-            cover_per_list = []
-            picture_range_map = self._create_picture_range_map(top_down_map[n], fog_of_war_map[n])
+            if len(self._taken_picture_list[n]) == 0:
+                self._load_subgoal_list(current_episodes, n, rewards[n][5])
             
-            picture_list = self._taken_picture_list[n]
+            self._taken_picture_list[n].append([pic_val[n], observations[n]["rgb"], rewards[n][6], rewards[n][7], infos[n]["explored_map"]])
                 
-            description = self.description_df[self.description_df["scene_id"]==current_episodes[n].scene_id[-15:-4]]["description"].item()
-            pred_description = self.create_description(picture_list)
-            pre_sim = self.calculate_similarity(pred_description, description)
+            subgoal_reward[n] = self._calculate_subgoal_reward(semantic_obs[n], n)
+            reward[n] += subgoal_reward[n]
 
-            caption = self._create_caption(observations[n]["rgb"])
-            #new_emmbedding = self._create_new_description_embedding(caption)
-            new_emmbedding = self._create_new_image_embedding(observations[n]["rgb"])
-
-            # p_kのそれぞれのpicture_range_mapのリスト
-            pre_fog_of_war_map = [sublist[1] for sublist in picture_list]
-
-            # それぞれと閾値より被っているか計算
-            idx = -1
-            min_sal = saliency[n]
-
-            for k in range(len(pre_fog_of_war_map)):
-                # 閾値よりも被っていたらcover_listにkを追加
-                check, per = self._check_percentage_of_fog(picture_range_map, pre_fog_of_war_map[k], threshold=0.1)
-                cover_per_list.append(per)
-                #logger.info(f"{current_episodes[i].episode_id}, STEPS: {steps}, PERCENTAGE: {per}")
-                if check == True:
-                    cover_list.append(k)
-
-                #saliencyの最小値の写真を探索(１つも被っていない時用)
-                if (idx == -1) and (min_sal == picture_list[idx][0]):
-                    idx = -2
-                elif min_sal > picture_list[idx][0]:
-                    idx = k
-                    min_sal = picture_list[idx][0]
-
-            # 今までの写真と多くは被っていない時
-            if len(cover_list) == 0:
-                #範囲が多く被っていなくて、self._num_picture回未満写真を撮っていたらそのまま保存
-                if len(picture_list) != self._num_picture:
-                    picture_list.append([saliency[n], picture_range_map, new_emmbedding, caption])
-                    #picture_list.append(observations[n]["rgb"])
-                    self._taken_picture_list[n] = picture_list
-
-                    # 説明文を生成し、similarityの差を計算する
-                    pred_description = self.create_description(picture_list)
-                    after_sim = self.calculate_similarity(pred_description, description)
-                    each_sim[n] = (after_sim - pre_sim)*10
-                    reward[n] += each_sim[n]
-                    continue
-
-                #範囲が多く被っていなくて、self._num_picture回以上写真を撮っていたら
-                else:
-                    # 今回の写真が保存している写真でsaliencyが最小のものと同じだった場合、写真の類似度が最大のものと交換
-                    if idx == -2:
-                        remove_index = self._cal_remove_index(picture_list, new_emmbedding)
-                        # 入れ替えしない場合
-                        if remove_index == len(picture_list):
-                            continue
-                        picture_list[remove_index] = [saliency[n], picture_range_map, new_emmbedding, caption]
-                        self._taken_picture_list[n] = picture_list
-                        #picture_list[idx] = observations[n]["rgb"]
-
-                        # 説明文を生成し、similarityの差を計算する
-                        pred_description = self.create_description(picture_list)
-                        after_sim = self.calculate_similarity(pred_description, description)
-                        each_sim[n] = (after_sim - pre_sim)*10
-                        reward[n] += each_sim[n]
-                        continue
-
-                    # 今回の写真が保存してある写真の１つでもSaliencyが高かったらSaliencyが最小の保存写真と入れ替え
-                    elif idx != -1:
-                        sal_pre = picture_list[idx][0]
-                        picture_list[idx] = [saliency[n], picture_range_map, new_emmbedding, caption]
-                        self._taken_picture_list[n] = picture_list
-                        #picture_list[idx] = observations[n]["rgb"]
-
-                        # 説明文を生成し、similarityの差を計算する
-                        pred_description = self.create_description(picture_list)
-                        after_sim = self.calculate_similarity(pred_description, description)
-                        each_sim[n] = (after_sim - pre_sim)*10
-                        reward[n] += each_sim[n]
-                        continue
-
-            # 1つとでも多く被った場合
-            else:
-                min_idx = -1
-                #min_sal_k = 1000
-                max_sal_k = 0.0
-                idx_sal = -1
-                # 多く被った写真のうち、saliencyが最小のものを計算
-                # 多く被った写真のうち、被っている割合が多い写真とsaiencyを比較
-                for k in range(len(cover_list)):
-                    idx_k = cover_list[k]
-                    """
-                    if picture_list[idx_k][0] < min_sal_k:
-                        min_sal_k = picture_list[idx_k][0]
-                        min_idx = idx_k
-                    """
-                    if max_sal_k < cover_per_list[idx_k]:
-                        max_sal_k = cover_per_list[idx_k]
-                        min_idx = idx_k
-                        idx_sal = picture_list[idx_k][0]
-                
-                # 被った割合分小さくなったCIでも保存写真の中の最小のCIより大きかったら交換
-                #if self._compareWithChangedSal(picture_range_map, pre_fog_of_war_map, cover_list, saliency[n], min_sal_k, min_idx) == True:
-                res = self._compareWithChangedSal(picture_range_map, pre_fog_of_war_map, cover_list, saliency[n], idx_sal, min_idx)
-                if res == 0:
-                    picture_list[min_idx] = [saliency[n], picture_range_map, new_emmbedding, caption]
-                    self._taken_picture_list[n] = picture_list
-                    #self._taken_picture[n][min_idx] = observations[n]["rgb"]   
-                    
-                    # 説明文を生成し、similarityの差を計算する
-                    pred_description = self.create_description(picture_list)
-                    after_sim = self.calculate_similarity(pred_description, description)
-                    each_sim[n] = (after_sim - pre_sim)*10
-                    reward[n] += each_sim[n]
-                    continue
-                # 被った割合分小さくなったCIと保存写真の中の最小のCIが等しかったら写真の類似度が最大のものを削除
-                if res == 1:
-                    remove_index = self._cal_remove_index(picture_list, new_emmbedding)
-                    # 入れ替えしない場合
-                    if remove_index == len(picture_list):
-                        continue
-                    picture_list[remove_index] = [saliency[n], picture_range_map, new_emmbedding, caption]
-                    self._taken_picture_list[n] = picture_list
-                    #picture_list[idx] = observations[n]["rgb"]
-
-                    # 説明文を生成し、similarityの差を計算する
-                    pred_description = self.create_description(picture_list)
-                    after_sim = self.calculate_similarity(pred_description, description)
-                    each_sim[n] = (after_sim - pre_sim)*10
-                    reward[n] += each_sim[n]
-                    continue
+        reward = torch.tensor(reward, dtype=torch.float, device=self.device).unsqueeze(1)
+        exp_area = torch.tensor(exp_area, dtype=torch.float, device=self.device).unsqueeze(1)
+        picture_value = torch.tensor(picture_value, dtype=torch.float, device=self.device).unsqueeze(1)
+        similarity = torch.tensor(similarity, dtype=torch.float, device=self.device).unsqueeze(1)
+        pic_sim = torch.tensor(pic_sim, dtype=torch.float, device=self.device).unsqueeze(1)
+        subgoal_reward = torch.tensor(subgoal_reward, dtype=torch.float, device=self.device).unsqueeze(1)
+        bleu_score = torch.tensor(bleu_score, dtype=torch.float, device=self.device).unsqueeze(1)
+        rouge_1_score = torch.tensor(rouge_1_score, dtype=torch.float, device=self.device).unsqueeze(1)
+        rouge_2_score = torch.tensor(rouge_2_score, dtype=torch.float, device=self.device).unsqueeze(1)
+        rouge_L_score = torch.tensor(rouge_L_score, dtype=torch.float, device=self.device).unsqueeze(1)
+        meteor_score = torch.tensor(meteor_score, dtype=torch.float, device=self.device).unsqueeze(1)
+        pas_score = torch.tensor(pas_score, dtype=torch.float, device=self.device).unsqueeze(1)
+        hes_score = torch.tensor(hes_score, dtype=torch.float, device=self.device).unsqueeze(1)
             
-        reward = torch.tensor(reward, dtype=torch.float, device=current_episode_reward.device).unsqueeze(1)
-        exp_area = torch.tensor(exp_area, dtype=torch.float, device=current_episode_reward.device).unsqueeze(1)
-        similarity = torch.tensor(similarity, dtype=torch.float, device=current_episode_reward.device).unsqueeze(1)
-        pic_sim = torch.tensor(pic_sim, dtype=torch.float, device=current_episode_reward.device).unsqueeze(1)
-        each_sim = torch.tensor(each_sim, dtype=torch.float, device=current_episode_reward.device).unsqueeze(1)       
-
         masks = torch.tensor(
             [[0.0] if done else [1.0] for done in dones],
             dtype=torch.float,
@@ -493,36 +499,95 @@ class PPOTrainerO(BaseRLTrainerOracle):
         )
         
         # episode ended
-        for i in range(len(observations)):
-            if masks[i].item() == 0.0:
-                description = self.description_df[self.description_df["scene_id"]==current_episodes[i].scene_id[-15:-4]]["description"].item()
-                pred_description = self.create_description(self._taken_picture_list[i])
-                similarity[i] = self.calculate_similarity(pred_description, description)
-                pic_sim[i] = self._calculate_pic_sim(self._taken_picture_list[i])
-                #reward[i] += (similarity[i] * 10)
+        for n in range(len(observations)):
+            if masks[n].item() == 0.0:  
+                # 写真の選別
+                self._taken_picture_list[n], picture_value[n] = self._select_pictures(self._taken_picture_list[n])
+                #results_image, positions_x, positions_y = self._create_results_image(self._taken_picture_list[n], infos[n]["explored_map"])
+                results_image, image_list = self._create_results_image2(self._taken_picture_list[n], infos[n]["explored_map"])
+                    
+                # Ground-Truth descriptionと生成文との類似度の計算 
+                similarity_list = []
+                bleu_list = []
+                rouge_1_list = []
+                rouge_2_list = []
+                rouge_L_list = []
+                meteor_list = []
+                pas_list = []
 
-                for j in range(len(self._taken_picture_list[i])):
-                    sum_saliency[i] += self._taken_picture_list[i][j][0]
-                sum_saliency[i] /= len(self._taken_picture_list[i])
-                sum_saliency = torch.tensor(sum_saliency, dtype=torch.float, device=current_episode_reward.device).unsqueeze(1)
-                current_episode_sum_saliency[i] += sum_saliency[i][0].item()
-
-                #self._taken_picture[n] = []
-                self._taken_picture_list[n] = []
-                #self._target_index_list[n] = [maps.MAP_TARGET_POINT_INDICATOR, maps.MAP_TARGET_POINT_INDICATOR+1, maps.MAP_TARGET_POINT_INDICATOR+2]
+                #pred_description = self.create_description(self._taken_picture_list[n])
+                pred_description = ""
+                if results_image is not None:
+                    #pred_description = self.create_description_from_results_image(results_image, positions_x, positions_y)
+                    pred_description = self.create_description_sometimes(image_list, results_image)
                 
+                s_lemmatized = self.lemmatize_and_filter(pred_description) 
+                description_list = self.description_dict[current_episodes[n].scene_id[-15:-4]]
+                hes_sentence_list = [pred_description]
 
+                for i in range(5):
+                    description = description_list[i]
+                    hes_sentence_list.append(description)
+                    
+                    sim_score = self.calculate_similarity(pred_description, description)
+                    bleu = self.calculate_bleu(description, pred_description)
+                    rouge_scores = self.calculate_rouge(description, pred_description)
+                    rouge_1 = rouge_scores['rouge1'].fmeasure
+                    rouge_2 = rouge_scores['rouge2'].fmeasure
+                    rouge_L = rouge_scores['rougeL'].fmeasure
+                    meteor = self.calculate_meteor(description, pred_description)
+                    pas = self.calculate_pas(s_lemmatized, description)
+
+                    similarity_list.append(sim_score)
+                    bleu_list.append(bleu)
+                    rouge_1_list.append(rouge_1)
+                    rouge_2_list.append(rouge_2)
+                    rouge_L_list.append(rouge_L)
+                    meteor_list.append(meteor)
+                    pas_list.append(pas)
+                    
+                similarity[n] = sum(similarity_list) / len(similarity_list)
+                pic_sim[n] = self._calculate_pic_sim(self._taken_picture_list[n])                
+
+                bleu_score[n] = sum(bleu_list) / len(bleu_list)
+                rouge_1_score[n] = sum(rouge_1_list) / len(rouge_1_list)
+                rouge_2_score[n] = sum(rouge_2_list) / len(rouge_2_list)
+                rouge_L_score[n] = sum(rouge_L_list) / len(rouge_L_list)
+                meteor_score[n] = sum(meteor_list) / len(meteor_list)
+                pas_score[n] = sum(pas_list) / len(pas_list)    
+                hes_score[n] = self.eval_model(hes_sentence_list).item()
+
+                #reward[n] += similarity[n]*10
+                reward[n] += hes_score[n]*0.5
+    
+                self._taken_picture_list[n] = []
+                
         current_episode_reward += reward
         running_episode_stats["reward"] += (1 - masks) * current_episode_reward
         current_episode_exp_area += exp_area
         running_episode_stats["exp_area"] += (1 - masks) * current_episode_exp_area
+        current_episode_picture_value += picture_value
+        running_episode_stats["picture_value"] += (1 - masks) * current_episode_picture_value
         current_episode_similarity += similarity
         running_episode_stats["similarity"] += (1 - masks) * current_episode_similarity
         current_episode_picsim += pic_sim
         running_episode_stats["pic_sim"] += (1 - masks) * current_episode_picsim
-        current_episode_each_sim += each_sim
-        running_episode_stats["each_sim"] += (1 - masks) * current_episode_each_sim
-        running_episode_stats["sum_saliency"] += (1 - masks) * current_episode_sum_saliency
+        current_episode_subgoal_reward += subgoal_reward
+        running_episode_stats["subgoal_reward"] += (1 - masks) * current_episode_subgoal_reward
+        current_episode_bleu_score += bleu_score
+        running_episode_stats["bleu_score"] += (1 - masks) * current_episode_bleu_score
+        current_episode_rouge_1_score += rouge_1_score
+        running_episode_stats["rouge_1_score"] += (1 - masks) * current_episode_rouge_1_score
+        current_episode_rouge_2_score += rouge_2_score
+        running_episode_stats["rouge_2_score"] += (1 - masks) * current_episode_rouge_2_score
+        current_episode_rouge_L_score += rouge_L_score
+        running_episode_stats["rouge_L_score"] += (1 - masks) * current_episode_rouge_L_score
+        current_episode_meteor_score += meteor_score
+        running_episode_stats["meteor_score"] += (1 - masks) * current_episode_meteor_score
+        current_episode_pas_score += pas_score
+        running_episode_stats["pas_score"] += (1 - masks) * current_episode_pas_score
+        current_episode_hes_score += hes_score
+        running_episode_stats["hes_score"] += (1 - masks) * current_episode_hes_score
         running_episode_stats["count"] += 1 - masks
 
         for k, v in self._extract_scalars_from_infos(infos).items():
@@ -538,11 +603,18 @@ class PPOTrainerO(BaseRLTrainerOracle):
 
         current_episode_reward *= masks
         current_episode_exp_area *= masks
+        current_episode_picture_value *= masks
         current_episode_similarity *= masks
         current_episode_picsim *= masks
-        current_episode_each_sim *= masks
-        current_episode_sum_saliency *= masks
-    
+        current_episode_subgoal_reward *= masks
+        current_episode_bleu_score *= masks
+        current_episode_rouge_1_score *= masks
+        current_episode_rouge_2_score *= masks
+        current_episode_rouge_L_score *= masks
+        current_episode_meteor_score *= masks
+        current_episode_pas_score *= masks
+        current_episode_hes_score *= masks
+        
         if self._static_encoder:
             with torch.no_grad():
                 batch["visual_features"] = self._encoder(batch)
@@ -615,46 +687,21 @@ class PPOTrainerO(BaseRLTrainerOracle):
         self.take_picture_writer = self.log_manager.createLogWriter("take_picture")
         self.picture_position_writer = self.log_manager.createLogWriter("picture_position")
 
-        self.envs = construct_envs(
-            self.config, get_env_class(self.config.ENV_NAME)
-        )
+        self.envs = construct_envs(self.config, get_env_class(self.config.ENV_NAME))
         
+        # picture_value, rgb_image, image_emb
+        self._taken_picture_list = []
+        self.subgoal_list = []
+        self.subgoal_num_list = []
         for _ in range(self.envs.num_envs):
-            #self._taken_picture.append([])
             self._taken_picture_list.append([])
-            #self._target_index_list.append([maps.MAP_TARGET_POINT_INDICATOR, maps.MAP_TARGET_POINT_INDICATOR+1, maps.MAP_TARGET_POINT_INDICATOR+2])
-            #self._observed_object_ci_one.append([0, 0, 0])
+            self.subgoal_list.append([])
+            self.subgoal_num_list.append([])
 
+        self.each_subgoal_reward = 0.05
+        self.threshold_subgoal = 5
+            
         ppo_cfg = self.config.RL.PPO
-        self.device = (
-            torch.device("cuda", self.config.TORCH_GPU_ID)
-            if torch.cuda.is_available()
-            else torch.device("cpu")
-        )
-        # Sentence-BERTモデルの読み込み
-        self.bert_model = SentenceTransformer('all-MiniLM-L6-v2')
-        
-        # lavisモデルの読み込み
-        self.lavis_model, self.vis_processors, _ = load_model_and_preprocess(name="blip_caption", model_type="base_coco", is_eval=True, device=self.device)
-        self.bert_model.to(self.device)
-        self.lavis_model.to(self.device)
-
-        # Load the clip model
-        self.clip_model, self.preprocess = clip.load('ViT-B/32', self.device)
-        
-        
-        # ファイルを読み込んで行ごとにリストに格納する
-        with open('data/scene_datasets/mp3d/description.txt', 'r') as file:
-            lines = file.readlines()
-
-        # scene id と文章を抽出してデータフレームに変換する
-        scene_ids = []
-        descriptions = []
-        for i in range(0, len(lines), 3):
-            scene_ids.append(lines[i].strip())
-            descriptions.append(lines[i+2].strip())
-
-        self.description_df = pd.DataFrame({'scene_id': scene_ids, 'description': descriptions})
             
         os.makedirs(self.config.CHECKPOINT_FOLDER, exist_ok=True)
         self._setup_actor_critic_agent(ppo_cfg)
@@ -665,9 +712,11 @@ class PPOTrainerO(BaseRLTrainerOracle):
         )
 
         ################
-        checkpoint_path = "/gs/fs/tga-aklab/matsumoto/Main/cpt/24-04-25 00-34-27/ckpt.208.pth"
-        ckpt_dict = self.load_checkpoint(checkpoint_path, map_location="cpu")
-        self.agent.load_state_dict(ckpt_dict["state_dict"])
+        #heckpoint_path = "/gs/fs/tga-aklab/matsumoto/Main/cpt/24-06-28 04-00-29/ckpt.44.pth"
+        #checkpoint_path = "/gs/fs/tga-aklab/matsumoto/Main/cpt/24-06-28 04-51-59/ckpt.48.pth"
+        #ckpt_dict = self.load_checkpoint(checkpoint_path, map_location="cpu")
+        #self.agent.load_state_dict(ckpt_dict["state_dict"])
+        #logger.info(f"########## LOAD CKPT at {checkpoint_path} ###########")
         #############
 
         rollouts = RolloutStorageOracle(
@@ -693,18 +742,33 @@ class PPOTrainerO(BaseRLTrainerOracle):
 
         current_episode_reward = torch.zeros(self.envs.num_envs, 1, device=self.device)
         current_episode_exp_area = torch.zeros(self.envs.num_envs, 1, device=self.device)
+        current_episode_picture_value = torch.zeros(self.envs.num_envs, 1, device=self.device)
         current_episode_similarity = torch.zeros(self.envs.num_envs, 1, device=self.device)
         current_episode_picsim = torch.zeros(self.envs.num_envs, 1, device=self.device)
-        current_episode_each_sim = torch.zeros(self.envs.num_envs, 1, device=self.device)
-        current_episode_sum_saliency = torch.zeros(self.envs.num_envs, 1, device=self.device)
+        current_episode_subgoal_reward = torch.zeros(self.envs.num_envs, 1, device=self.device)
+        current_episode_bleu_score = torch.zeros(self.envs.num_envs, 1, device=self.device)
+        current_episode_rouge_1_score = torch.zeros(self.envs.num_envs, 1, device=self.device)
+        current_episode_rouge_2_score = torch.zeros(self.envs.num_envs, 1, device=self.device)
+        current_episode_rouge_L_score = torch.zeros(self.envs.num_envs, 1, device=self.device)
+        current_episode_meteor_score = torch.zeros(self.envs.num_envs, 1, device=self.device)
+        current_episode_pas_score = torch.zeros(self.envs.num_envs, 1, device=self.device)
+        current_episode_hes_score = torch.zeros(self.envs.num_envs, 1, device=self.device)
+        
         running_episode_stats = dict(
             count=torch.zeros(self.envs.num_envs, 1, device=current_episode_reward.device),
             reward=torch.zeros(self.envs.num_envs, 1, device=current_episode_reward.device),
             exp_area=torch.zeros(self.envs.num_envs, 1, device=current_episode_reward.device),
+            picture_value=torch.zeros(self.envs.num_envs, 1, device=current_episode_reward.device),
             similarity=torch.zeros(self.envs.num_envs, 1, device=current_episode_reward.device),
             pic_sim=torch.zeros(self.envs.num_envs, 1, device=current_episode_reward.device),
-            each_sim=torch.zeros(self.envs.num_envs, 1, device=current_episode_reward.device),
-            sum_saliency=torch.zeros(self.envs.num_envs, 1, device=current_episode_reward.device),
+            subgoal_reward=torch.zeros(self.envs.num_envs, 1, device=current_episode_reward.device),
+            bleu_score=torch.zeros(self.envs.num_envs, 1, device=current_episode_reward.device),
+            rouge_1_score=torch.zeros(self.envs.num_envs, 1, device=current_episode_reward.device),
+            rouge_2_score=torch.zeros(self.envs.num_envs, 1, device=current_episode_reward.device),
+            rouge_L_score=torch.zeros(self.envs.num_envs, 1, device=current_episode_reward.device),
+            meteor_score=torch.zeros(self.envs.num_envs, 1, device=current_episode_reward.device),
+            pas_score=torch.zeros(self.envs.num_envs, 1, device=current_episode_reward.device),
+            hes_score=torch.zeros(self.envs.num_envs, 1, device=current_episode_reward.device),
         )
         window_episode_stats = defaultdict(
             lambda: deque(maxlen=ppo_cfg.reward_window_size)
@@ -721,8 +785,6 @@ class PPOTrainerO(BaseRLTrainerOracle):
             lr_lambda=lambda x: linear_decay(x, self.config.NUM_UPDATES),
         )
 
-        os.makedirs(self.config.TENSORBOARD_DIR + "/" + date, exist_ok=True)
-        
         for update in range(self.config.NUM_UPDATES):
             if ppo_cfg.use_linear_lr_decay:
                 lr_scheduler.step()
@@ -746,7 +808,21 @@ class PPOTrainerO(BaseRLTrainerOracle):
                     delta_env_time,
                     delta_steps,
                 ) = self._collect_rollout_step(
-                    rollouts, current_episode_reward, current_episode_exp_area, current_episode_similarity, current_episode_picsim, current_episode_each_sim, current_episode_sum_saliency, running_episode_stats
+                    rollouts, 
+                    current_episode_reward, 
+                    current_episode_exp_area, 
+                    current_episode_picture_value, 
+                    current_episode_similarity, 
+                    current_episode_picsim, 
+                    current_episode_subgoal_reward, 
+                    current_episode_bleu_score,
+                    current_episode_rouge_1_score,
+                    current_episode_rouge_2_score,
+                    current_episode_rouge_L_score,
+                    current_episode_meteor_score,
+                    current_episode_pas_score,
+                    current_episode_hes_score,
+                    running_episode_stats
                 )
                 pth_time += delta_pth_time
                 env_time += delta_env_time
@@ -804,11 +880,13 @@ class PPOTrainerO(BaseRLTrainerOracle):
 
             if len(metrics) > 0:
                 logger.info("COUNT: " + str(deltas["count"]))
+                logger.info("HES Score: " + str(metrics["hes_score"]))
+                logger.info("PAS Score: " + str(metrics["pas_score"]))
                 logger.info("Similarity: " + str(metrics["similarity"]))
-                logger.info("Pic_Sim: " + str(metrics["pic_sim"]))
+                logger.info("SubGoal_Reward: " + str(metrics["subgoal_reward"]))
+                logger.info("BLUE: " + str(metrics["bleu_score"]) + ", ROUGE-1: " + str(metrics["rouge_1_score"]) + ", ROUGE-2: " + str(metrics["rouge_2_score"]) + ", ROUGE-L: " + str(metrics["rouge_L_score"]) + ", METEOR: " + str(metrics["meteor_score"]))
                 logger.info("REWARD: " + str(deltas["reward"] / deltas["count"]))
-                metrics_logger.writeLine(str(count_steps) + "," + str(metrics["exp_area"]) + "," + str(metrics["similarity"]) + "," + str(metrics["pic_sim"]) + "," + str(metrics["each_sim"]) + "," + str(metrics["sum_saliency"]) + "," + str(metrics["raw_metrics.agent_path_length"]))
-                    
+                metrics_logger.writeLine(str(count_steps)+","+str(metrics["exp_area"])+","+str(metrics["similarity"])+","+str(metrics["picture_value"])+","+str(metrics["pic_sim"])+","+str(metrics["subgoal_reward"])+","+str(metrics["bleu_score"])+","+str(metrics["rouge_1_score"])+","+str(metrics["rouge_2_score"])+","+str(metrics["rouge_L_score"])+","+str(metrics["meteor_score"])+","+str(metrics["pas_score"])+","+str(metrics["hes_score"])+","+str(metrics["raw_metrics.agent_path_length"]))
                 logger.info(metrics)
             
             loss_logger.writeLine(str(count_steps) + "," + str(value_loss) + "," + str(action_loss))
@@ -848,121 +926,335 @@ class PPOTrainerO(BaseRLTrainerOracle):
                 count_checkpoints += 1
 
         self.envs.close()
-            
-            
-    # 写真を撮った範囲のマップを作成
-    def _create_picture_range_map(self, top_down_map, fog_of_war_map):
-        # 0: 壁など, 1: 写真を撮った範囲, 2: 巡回可能領域
-        picture_range_map = np.zeros_like(top_down_map)
-        for i in range(len(top_down_map)):
-            for j in range(len(top_down_map[0])):
-                if top_down_map[i][j] != 0:
-                    if fog_of_war_map[i][j] == 1:
-                        picture_range_map[i][j] = 1
-                    else:
-                        picture_range_map[i][j] = 2
-                        
-        return picture_range_map
-            
-    # fog_mapがpre_fog_mapと閾値以上の割合で被っているか
-    def _check_percentage_of_fog(self, fog_map, pre_fog_map, threshold=0.25):
-        y = len(fog_map)
-        x = len(fog_map[0])
-        
-        num = 0 #fog_mapのMAP_VALID_POINTの数
-        num_covered = 0 #pre_fog_mapと被っているグリッド数
-        
-        y_pre = len(pre_fog_map)
-        x_pre = len(pre_fog_map[0])
-        
-        per = -1.0
-        if (x==x_pre) and (y==y_pre):
-            for i in range(y):
-                for j in range(x):
-                    # fog_mapで写真を撮っている範囲の時
-                    if fog_map[i][j] == 1:
-                        num += 1
-                        # fogとpre_fogがかぶっている時
-                        if pre_fog_map[i][j] == 1:
-                            num_covered += 1
-                            
-            if num == 0:
-                per = 0.0
-            else:
-                per = num_covered / num
-            
-            if per < threshold:
-                return False, per
-            else:
-                return True, per
-        else:
-            #logger.info("CHECK, false")
-            return False, per
-        
-    # fog_mapがidx以外のpre_fog_mapと被っている割合を算出
-    def _cal_rate_of_fog_other(self, fog_map, pre_fog_of_war_map_list, cover_list, idx):
-        y = len(fog_map)
-        x = len(fog_map[0])
 
-        num = 0.0 #fog_mapのMAP_VALID_POINTの数
-        num_covered = 0.0 #pre_fog_mapのどれかと被っているグリッド数
+    def _select_pictures(self, taken_picture_list):
+        results = []
+        res_val = 0.0
+
+        sorted_picture_list = sorted(taken_picture_list, key=lambda x: x[0], reverse=True)
+        i = 0
+        while True:
+            if len(results) == self._num_picture:
+                break
+            if i == len(sorted_picture_list):
+                break
+            emd = self._create_new_image_embedding(sorted_picture_list[i][1])
+            is_save = self._decide_save(emd, results)
+
+            if is_save == True:
+                results.append(sorted_picture_list[i])
+                res_val += sorted_picture_list[i][0]
+            i += 1
+
+        res_val /= len(results)
+        return results, res_val
+
+    def _select_random_pictures(self, taken_picture_list):
+        results = taken_picture_list
+        num = len(taken_picture_list)
+        if len(taken_picture_list) > self._num_picture:
+            results = random.sample(taken_picture_list, self._num_picture)
+            num = self._num_picture
+        res_val = 0.0
+
+        for i in range(num):
+            res_val += results[i][0]
+
+        return results, res_val
+
+
+    def _decide_save(self, emd, results):
+        for i in range(len(results)):
+            check_emb = self._create_new_image_embedding(results[i][1])
+
+            sim = util.pytorch_cos_sim(emd, check_emb).item()
+            if sim >= self._select_threthould:
+                return False
+        return True
+
+
+    def _create_results_image(self, picture_list, infos):
+        images = []
+        x_list = []
+        y_list = []
+    
+        if len(picture_list) == 0:
+            return None
+
+        for i in range(self._num_picture):
+            idx = i%len(picture_list)
+            explored_map, fog_of_war_map = self.get_explored_picture(picture_list[idx][4])
+            range_x = np.where(np.any(explored_map == maps.MAP_INVALID_POINT, axis=1))[0]
+            range_y = np.where(np.any(explored_map == maps.MAP_INVALID_POINT, axis=0))[0]
+
+            _ind_x_min = range_x[0]
+            _ind_x_max = range_x[-1]
+            _ind_y_min = range_y[0]
+            _ind_y_max = range_y[-1]
+            _grid_delta = 5
+            clip_parameter = [_ind_x_min, _ind_x_max, _ind_y_min, _ind_y_max, _grid_delta]
+
+            frame = create_each_image(picture_list[idx][1], explored_map, fog_of_war_map, infos, clip_parameter)
+            
+            images.append(frame)
+            x_list.append(picture_list[idx][2])
+            y_list.append(picture_list[idx][3])
+            image = Image.fromarray(frame)
+            image.save(f"/gs/fs/tga-aklab/matsumoto/Main/test_{i}.png")
+
+        height, width, _ = images[0].shape
+        result_width = width * 2
+        result_height = height * 5
+        result_image = Image.new("RGB", (result_width, result_height))
+
+        for i, image in enumerate(images):
+            x_offset = (i // 5) * width
+            y_offset = (i % 5) * height
+            image = Image.fromarray(image)
+            result_image.paste(image, (x_offset, y_offset))
         
+        draw = ImageDraw.Draw(result_image)
+        for x in range(width, result_width, width):
+            draw.line([(x, 0), (x, result_height)], fill="black", width=7)
+        for y in range(height, result_height, height):
+            draw.line([(0, y), (result_width, y)], fill="black", width=7)
+
+        return result_image, x_list, y_list
+
+    def _create_results_image2(self, picture_list, infos):
+        images = []
+    
+        if len(picture_list) == 0:
+            return None
+
+        height, width, _ = picture_list[0][1].shape
+        result_width = width * 5
+        result_height = height * 2
+        result_image = Image.new("RGB", (result_width, result_height))
+
+        for i in range(self._num_picture):
+            idx = i%len(picture_list)
+            images.append(picture_list[idx][1])
+
+        for i, image in enumerate(images):
+            x_offset = (i % 5) * width
+            y_offset = (i // 5) * height
+            image = Image.fromarray(image)
+            result_image.paste(image, (x_offset, y_offset))
+        
+        draw = ImageDraw.Draw(result_image)
+        for x in range(width, result_width, width):
+            draw.line([(x, 0), (x, result_height)], fill="black", width=7)
+        for y in range(height, result_height, height):
+            draw.line([(0, y), (result_width, y)], fill="black", width=7)
+
+        return result_image, images
+
+
+    def create_description_from_results_image(self, results_image, x_list, y_list, input_change=False):
+        input_text = "<Instructions>\n"\
+                    "You are an excellent property writer.\n"\
+                    "The input image consists of 10 pictures of a building, 5 vertically and 2 horizontally, within a single picture.\n"\
+                    "In addition, each picture is separated by a black line.\n"\
+                    "\n"\
+                    "From each picture, understand the details of this building's environment and summarize them in the form of a detailed description of this building's environment, paying attention to the <Notes>.\n"\
+                    "In doing so, please also consider the location of each picture as indicated by <Location Information>.\n"\
+                    "\n\n"\
+                    "<Notes>\n"\
+                    "・Note that adjacent pictures are not close in location.\n"\
+                    "・When describing the environment, do not mention whether it was taken from that picture or the black line separating each picture.\n"\
+                    "・Write a description of approximately 100 words in summary form without mentioning each individual picture."
+        #logger.info("############## input_text ###############")
+        #logger.info(input_text)
+        if input_change == True:
+            logger.info("############## Input Change ################")
+            input_text = "You are an excellent property writer. This picture consists of 10 pictures arranged in one picture, 5 horizontally and 2 vertically on one building. In addition, a black line separates the pictures from each other. From each picture, you should understand the details of this building's environment and describe this building's environment in detail in the form of a summary of these pictures. At this point, do not describe each picture one at a time, but rather in a summarized form. Also note that each picture was taken in a separate location, so successive pictures are not positionally close. Additionally, do not mention which picture you are quoting from or the black line separating each picture."
+        response = self.generate_response(results_image, input_text)
+        response = response[4:-4]
+        return response
+
+    def create_description_sometimes(self, image_list, results_image):
+        input_text1 = "# Instructions\n"\
+                    "You are an excellent property writer.\n"\
+                    "Please understand the details of the environment of this building from the pictures you have been given and explain what it is like to be in this environment as a person in this environment."
+
+        image_descriptions = []
+        for image in image_list:
+            response = self.generate_response(image, input_text1)
+            response = response[4:-4]
+            image_descriptions.append(response)
+
+        input_text2 = "# Instructions\n"\
+                    "You are an excellent property writer.\n"\
+                    "# Each_Description is a description of the building in the pictures you have entered. Please summarize these and write a description of the entire environment as if you were a person in this environment.\n"\
+                    "\n"\
+                    "# Each_Description\n"
+        input_text3 = "# Notes\n"\
+                    "・Please summarize # Each_Description and write a description of the entire environment as if you were a person in this environment.\n"\
+                    "・Please write approximately 100 words.\n"\
+                    "・Please note that the sentences in # Each_Description are not necessarily close in distance."
+
+        for description in image_descriptions:
+            each_description = "・" + description + "\n"
+            input_text2 += each_description
+
+        input_text = input_text2 + "\n" + input_text3
+
+        response = self.generate_response(results_image, input_text)
+        response = response[4:-4]
+
+        return response
+
+    def generate_response(self, image, input_text):
+        if 'llama-2' in self.llava_model_name.lower():
+            conv_mode = "llava_llama_2"
+        elif "v1" in self.llava_model_name.lower():
+            conv_mode = "llava_v1"
+        elif "mpt" in self.llava_model_name.lower():
+            conv_mode = "mpt"
+        else:
+            conv_mode = "llava_v0"
+
+        conv = conv_templates[conv_mode].copy()
+        roles = conv.roles if "mpt" not in self.llava_model_name.lower() else ('user', 'assistant')
+
+        image_tensor = self.llava_image_processor.preprocess(image, return_tensors='pt')['pixel_values'].half().cuda()
+
+        inp = input_text
+        if image is not None:
+            if self.llava_model.config.mm_use_im_start_end:
+                inp = DEFAULT_IM_START_TOKEN + DEFAULT_IMAGE_TOKEN + DEFAULT_IM_END_TOKEN + '\n' + inp
+            else:
+                inp = DEFAULT_IMAGE_TOKEN + '\n' + inp
+
+            conv.append_message(conv.roles[0], inp)
+            image = None
+        else:
+            conv.append_message(conv.roles[0], inp)
+
+        conv.append_message(conv.roles[1], None)
+        prompt = conv.get_prompt()
+
+        input_ids = tokenizer_image_token(prompt, self.tokenizer, IMAGE_TOKEN_INDEX, return_tensors='pt').unsqueeze(0).cuda()
+        stop_str = conv.sep if conv.sep_style != SeparatorStyle.TWO else conv.sep2
+        keywords = [stop_str]
+        streamer = TextStreamer(self.tokenizer, skip_prompt=True, skip_special_tokens=True)
+
+        with torch.inference_mode():
+            output_ids = self.llava_model.generate(
+                input_ids,
+                images=image_tensor,
+                do_sample=True,
+                temperature=0.2,
+                max_new_tokens=2048,
+                streamer=streamer,
+                use_cache=True,
+            )
+
+        outputs = self.tokenizer.decode(output_ids[0]).strip()
+        conv.messages[-1][-1] = outputs
+        outputs = outputs.replace("\n\n", " ")
+        return outputs
+
+
+    # BLEUスコアの計算
+    def calculate_bleu(self, reference, candidate):
+        reference = [reference.split()]
+        candidate = candidate.split()
+        smoothie = SmoothingFunction().method4
+        return sentence_bleu(reference, candidate, smoothing_function=smoothie)
+
+    # ROUGEスコアの計算
+    def calculate_rouge(self, reference, candidate):
+        scorer = rouge_scorer.RougeScorer(['rouge1', 'rouge2', 'rougeL'], use_stemmer=True)
+        scores = scorer.score(reference, candidate)
+        return scores
+
+    # METEORスコアの計算
+    def calculate_meteor(self, reference, candidate):
+        reference = reference.split()
+        candidate = candidate.split()
+        return Meteor_score([reference], candidate)
+
+    def get_wordnet_pos(self, word):
+        """WordNetの品詞タグを取得"""
+        tag = nltk.pos_tag([word])[0][1][0].upper()
+        tag_dict = {"J": wordnet.ADJ, "N": wordnet.NOUN, "V": wordnet.VERB, "R": wordnet.ADV}
+        return tag_dict.get(tag, wordnet.NOUN)
+
+    def lemmatize_and_filter(self, text):
+        """ステミング処理を行い、ストップワードを除去"""
+        tokens = word_tokenize(text.lower())
+        filtered_tokens = [self.lemmatizer.lemmatize(token, self.get_wordnet_pos(token)) 
+                        for token in tokens if token.isalpha() 
+                        and token not in stopwords.words('english')]
+        return filtered_tokens
+
+    # 単語が一致しているかどうかを判断する
+    def is_matching(self, word1, word2):
+        # ステミングされた単語が一致するか
+        lemma1 = self.lemmatizer.lemmatize(word1)
+        lemma2 = self.lemmatizer.lemmatize(word2)
+        
+        if lemma1 == lemma2:
+            return True
+        
+        # 類義語が存在するか
+        synsets1 = wordnet.synsets(lemma1)
+        synsets2 = wordnet.synsets(lemma2)
+        
+        if synsets1 and synsets2:
+            # synsetsをリーマティックに比較
+            return any(s1.wup_similarity(s2) >= 0.9 for s1 in synsets1 for s2 in synsets2)
+        
+        return False
+
+    def calculate_pas(self, s_lemmatized, description):
+        gt_lemmatized = self.lemmatize_and_filter(description)
+        precision, recall, total_weight, total_gt_weight = 0.0, 0.0, 0.0, 0.0
+        matched_words = set()
+
+        for j, s_word in enumerate(s_lemmatized):
+            weight = 1.0 / (j + 1)  # 単語の位置に応じた重み付け
+            total_weight += weight
+                
+            if any(self.is_matching(s_word, gt_word) for gt_word in gt_lemmatized):
+                precision += weight
+                matched_words.add(s_word)
+
+        for j, gt_word in enumerate(gt_lemmatized):
+            weight = 1.0 / (j + 1)
+            total_gt_weight += weight
+            if any(self.is_matching(gt_word, s_word) for s_word in matched_words):
+                recall += weight
+
+        precision /= total_weight if total_weight > 0 else 1
+        recall /= total_gt_weight if total_gt_weight > 0 else 1
+
+        if precision + recall == 0:
+            f_score = 0
+        else:
+            f_score = 2 * (precision * recall) / (precision + recall)
+
+        return f_score
+
+    def get_explored_picture(self, infos):
+        explored_map = infos["map"]
+        fog_of_war_map = infos["fog_of_war_mask"]
+        y, x = explored_map.shape
+
         for i in range(y):
             for j in range(x):
-                # fog_mapで写真を撮っている範囲の時
-                if fog_map[i][j] == 1:
-                    num += 1
-                    
-                    # 被っているmapを検査する
-                    for k in range(len(cover_list)):
-                        map_idx = cover_list[k]
-                        if map_idx == idx:
-                            continue
-                        
-                        pre_map = pre_fog_of_war_map_list[map_idx]
-                        # fogとpre_fogがかぶっている時
-                        if pre_map[i][j] == 1:
-                            num_covered += 1
-                            break               
-        if num == 0:
-            rate = 0.0
-        else:
-            rate = num_covered / num
-        
-        return rate
-    
-    
-    def _compareWithChangedSal(self, picture_range_map, pre_fog_of_war_map_list, cover_list, saliency, pre_saliency, idx):
-        rate = self._cal_rate_of_fog_other(picture_range_map, pre_fog_of_war_map_list, cover_list, idx)
-        saliency = saliency * (1-rate) # k以外と被っている割合分小さくする
-        #logger.info(f"LIST_SIZE: {len(cover_list)}, RATE: {rate}, saliency: {saliency}, pre_saliency: {pre_saliency}")
-        if saliency > pre_saliency:
-            return 0
-        elif saliency == pre_saliency:
-            return 1
-        else:
-            return 2
-        
-    # 写真を撮った範囲のピクセルを計算
-    def _cal_picture_range(self, top_down_map, fog_of_war_map):
-        # 0: 壁など, 1: 写真を撮った範囲, 2: 巡回可能領域
-        pixel_num = 0
-        for i in range(len(top_down_map)):
-            for j in range(len(top_down_map[0])):
-                if top_down_map[i][j] != 0:
-                    if fog_of_war_map[i][j] == 1:
-                        pixel_num += 1
-                        
-        return pixel_num  
-        
+                if fog_of_war_map[i][j] == 1:
+                    if explored_map[i][j] == maps.MAP_VALID_POINT:
+                        explored_map[i][j] = maps.MAP_INVALID_POINT
+                else:
+                    if explored_map[i][j] in [maps.MAP_VALID_POINT, maps.MAP_INVALID_POINT]:
+                        explored_map[i][j] = maps.MAP_BORDER_INDICATOR
+            
+        return explored_map, fog_of_war_map
 
-    def _eval_checkpoint(
-        self,
-        checkpoint_path: str,
-        log_manager: LogManager,
-        date: str,
-        checkpoint_index: int = 0,
-    ) -> None:
+    def _eval_checkpoint(self, checkpoint_path: str, log_manager: LogManager, date: str, checkpoint_index: int = 0) -> None:
         logger.info("############### EAVL ##################")
         self.log_manager = log_manager
         #ログ出力設定
@@ -974,8 +1266,7 @@ class PPOTrainerO(BaseRLTrainerOracle):
         
         # Map location CPU is almost always better than mapping to a CUDA device.
         ckpt_dict = self.load_checkpoint(checkpoint_path, map_location="cpu")
-        print("PATH")
-        print(checkpoint_path)
+        logger.info(checkpoint_path)
 
         if self.config.EVAL.USE_CKPT_CONFIG:
             config = self._setup_eval_config(ckpt_dict["config"])
@@ -1001,35 +1292,9 @@ class PPOTrainerO(BaseRLTrainerOracle):
         self.agent.load_state_dict(ckpt_dict["state_dict"])
         self.actor_critic = self.agent.actor_critic
         
-        self._taken_picture = []
+        # picture_value, rgb_image, image_emb
         self._taken_picture_list = []
-        
-        # Sentence-BERTモデルの読み込み
-        self.bert_model = SentenceTransformer('all-MiniLM-L6-v2')
-        
-        # lavisモデルの読み込み
-        self.lavis_model, self.vis_processors, _ = load_model_and_preprocess(name="blip_caption", model_type="base_coco", is_eval=True, device=self.device)
-        self.bert_model.to(self.device)
-        self.lavis_model.to(self.device)
-
-        # Load the clip model
-        self.clip_model, self.preprocess = clip.load('ViT-B/32', self.device)
-        
-        # ファイルを読み込んで行ごとにリストに格納する
-        with open('data/scene_datasets/mp3d/description.txt', 'r') as file:
-            lines = file.readlines()
-
-        # scene id と文章を抽出してデータフレームに変換する
-        scene_ids = []
-        descriptions = []
-        for i in range(0, len(lines), 3):
-            scene_ids.append(lines[i].strip())
-            descriptions.append(lines[i+2].strip())
-
-        self.description_df = pd.DataFrame({'scene_id': scene_ids, 'description': descriptions})
-        
         for i in range(self.envs.num_envs):
-            self._taken_picture.append([])
             self._taken_picture_list.append([])
         
         observations = self.envs.reset()
@@ -1037,10 +1302,16 @@ class PPOTrainerO(BaseRLTrainerOracle):
 
         current_episode_reward = torch.zeros(self.envs.num_envs, 1, device=self.device)
         current_episode_exp_area = torch.zeros(self.envs.num_envs, 1, device=self.device)
+        current_episode_picture_value = torch.zeros(self.envs.num_envs, 1, device=self.device)
         current_episode_similarity = torch.zeros(self.envs.num_envs, 1, device=self.device)
         current_episode_picsim = torch.zeros(self.envs.num_envs, 1, device=self.device)
-        current_episode_each_sim = torch.zeros(self.envs.num_envs, 1, device=self.device)
-        current_episode_sum_saliency = torch.zeros(self.envs.num_envs, 1, device=self.device)
+        current_episode_bleu_score = torch.zeros(self.envs.num_envs, 1, device=self.device)
+        current_episode_rouge_1_score = torch.zeros(self.envs.num_envs, 1, device=self.device)
+        current_episode_rouge_2_score = torch.zeros(self.envs.num_envs, 1, device=self.device)
+        current_episode_rouge_L_score = torch.zeros(self.envs.num_envs, 1, device=self.device)
+        current_episode_meteor_score = torch.zeros(self.envs.num_envs, 1, device=self.device)
+        current_episode_pas_score = torch.zeros(self.envs.num_envs, 1, device=self.device)
+        current_episode_hes_score = torch.zeros(self.envs.num_envs, 1, device=self.device)
         
         test_recurrent_hidden_states = torch.zeros(
             self.actor_critic.net.num_recurrent_layers,
@@ -1061,10 +1332,14 @@ class PPOTrainerO(BaseRLTrainerOracle):
 
         pbar = tqdm.tqdm(total=self.config.TEST_EPISODE_COUNT)
         self.actor_critic.eval()
+        self.step = 0
         while (
             len(stats_episodes) < self.config.TEST_EPISODE_COUNT
             and self.envs.num_envs > 0
-        ):
+        ):  
+            if (self.step+1) % 100 == 0:
+                logger.info(f"step={self.step+1}")
+            self.step += 1
             current_episodes = self.envs.current_episodes()
 
             with torch.no_grad():
@@ -1081,12 +1356,6 @@ class PPOTrainerO(BaseRLTrainerOracle):
                     deterministic=False,
                 )
 
-                pre_ac = torch.zeros(prev_actions.shape[0], 1, device=self.device, dtype=torch.long)
-                for i in range(prev_actions.shape[0]):
-                    pre_ac[i] = prev_actions[i]
-
-                prev_actions.copy_(actions)
-
             outputs = self.envs.step([a[0].item() for a in actions])
  
             observations, rewards, dones, infos = [
@@ -1101,378 +1370,232 @@ class PPOTrainerO(BaseRLTrainerOracle):
             )
             
             reward = []
-            saliency = []
+            pic_val = []
+            picture_value = []
             similarity = []
             pic_sim = []
             exp_area = [] # 探索済みのエリア()
-            exp_area_pre = []
-            fog_of_war_map = []
-            top_down_map = [] 
-            top_map = []
-            each_sim = []
-            sum_saliency = []
+            bleu_score = []
+            rouge_1_score = []
+            rouge_2_score = []
+            rouge_L_score = []
+            meteor_score = []
+            pas_score = []
+            hes_score = []
             n_envs = self.envs.num_envs
-            for i in range(n_envs):
-                reward.append(rewards[i][0])
-                saliency.append(rewards[i][1])
+            for n in range(n_envs):
+                reward.append(rewards[n][0])
+                pic_val.append(rewards[n][1])
+                picture_value.append(0)
                 similarity.append(0)
                 pic_sim.append(0)
-                exp_area.append(rewards[i][2]-rewards[i][3])
-                exp_area_pre.append(rewards[i][3])
-                fog_of_war_map.append(infos[i]["picture_range_map"]["fog_of_war_mask"])
-                top_down_map.append(infos[i]["picture_range_map"]["map"])
-                top_map.append(infos[i]["top_down_map"]["map"])
-                each_sim.append(0)
-                sum_saliency.append(0)
-
-            for n in range(n_envs):
-                """
-                #TAKE_PICTUREが呼び出されたかを検証
-                if saliency[n] != -1:
-                    picture_list = self._taken_picture_list[n]
-                    
-                    description = self.description_df[self.description_df["scene_id"]==current_episodes[n].scene_id[-15:-4]]["description"].item()
-                    pred_description = self.create_description(picture_list)
-                    pre_sim = self.calculate_similarity(pred_description, description)
-
-                    caption = self._create_caption(observations[n]["rgb"])
-                    #new_emmbedding = self._create_new_description_embedding(caption)
-                    new_emmbedding = self._create_new_image_embedding(observations[n]["rgb"])
-
-                    picture_range_map = self._create_picture_range_map(top_down_map[n], fog_of_war_map[n])
-                    
-                    # self._num_picture回未満写真を撮っていたらそのまま保存
-                    if len(picture_list) < self._num_picture:
-                        picture_list.append([saliency[n], picture_range_map, new_emmbedding, caption])
-                        [saliency[n], picture_range_map, new_emmbedding, caption]
-                        self._taken_picture[n].append(observations[n]["rgb"])
-                        self._taken_picture_list[n] = picture_list
-                        
-                        # 説明文を生成し、similarityの差を計算する
-                        pred_description = self.create_description(picture_list)
-                        after_sim = self.calculate_similarity(pred_description, description)
-                        each_sim[n] = (after_sim - pre_sim)*10
-                        reward[n] += each_sim[n]
-                        continue
+                exp_area.append(rewards[n][2])
+                bleu_score.append(0)
+                rouge_1_score.append(0)
+                rouge_2_score.append(0)
+                rouge_L_score.append(0)
+                meteor_score.append(0)
+                pas_score.append(0)
+                hes_score.append(0)
                 
-                    # ランダムに写真を入れ替え
-                    idx = random.randrange(self._num_picture+1)
-                    
-                    # 入れ替えなし
-                    if idx == self._num_picture:
-                        continue
-                    
-                    # idxと入れ替える
-                    picture_list[idx] = [saliency[n], picture_range_map, new_emmbedding, caption]
-                    self._taken_picture_list[n] = picture_list
-                    self._taken_picture[n][idx] = observations[n]["rgb"]
-                
-                    # 説明文を生成し、similarityの差を計算する
-                    pred_description = self.create_description(picture_list)
-                    after_sim = self.calculate_similarity(pred_description, description)
-                    each_sim[n] = (after_sim - pre_sim)*10
-                    reward[n] += each_sim[n]
-                """
-                #TAKE_PICTUREが呼び出されたかを検証
-                if saliency[n] == -1:
-                    continue
-
-                # 2回連続でTAKE_PICTUREをした場合は保存しない
-                if pre_ac[n].item() == actions[n].item():
-                    continue
-
-                # 今回撮ったpicture(p_n)が保存してあるpicture(p_k)とかぶっているkを保存
-                cover_list = [] 
-                cover_per_list = []
-                picture_range_map = self._create_picture_range_map(top_down_map[n], fog_of_war_map[n])
-                
-                picture_list = self._taken_picture_list[n]
-                    
-                description = self.description_df[self.description_df["scene_id"]==current_episodes[n].scene_id[-15:-4]]["description"].item()
-                pred_description = self.create_description(picture_list)
-                pre_sim = self.calculate_similarity(pred_description, description)
-
-                caption = self._create_caption(observations[n]["rgb"])
-                #new_emmbedding = self._create_new_description_embedding(caption)
-                new_emmbedding = self._create_new_image_embedding(observations[n]["rgb"])
-
-                # p_kのそれぞれのpicture_range_mapのリスト
-                pre_fog_of_war_map = [sublist[1] for sublist in picture_list]
-
-                # それぞれと閾値より被っているか計算
-                idx = -1
-                min_sal = saliency[n]
-
-                for k in range(len(pre_fog_of_war_map)):
-                    # 閾値よりも被っていたらcover_listにkを追加
-                    check, per = self._check_percentage_of_fog(picture_range_map, pre_fog_of_war_map[k], threshold=0.1)
-                    cover_per_list.append(per)
-                    if check == True:
-                        cover_list.append(k)
-
-                    #saliencyの最小値の写真を探索(１つも被っていない時用)
-                    if (idx == -1) and (min_sal == picture_list[idx][0]):
-                        idx = -2
-                    elif min_sal > picture_list[idx][0]:
-                        idx = k
-                        min_sal = picture_list[idx][0]
-
-                # 今までの写真と多くは被っていない時
-                if len(cover_list) == 0:
-                    #範囲が多く被っていなくて、self._num_picture回未満写真を撮っていたらそのまま保存
-                    if len(picture_list) != self._num_picture:
-                        picture_list.append([saliency[n], picture_range_map, new_emmbedding, caption])
-                        self._taken_picture[n].append(observations[n]["rgb"])
-                        self._taken_picture_list[n] = picture_list
-
-                        # 説明文を生成し、similarityの差を計算する
-                        pred_description = self.create_description(picture_list)
-                        after_sim = self.calculate_similarity(pred_description, description)
-                        each_sim[n] = (after_sim - pre_sim)*10
-                        reward[n] += each_sim[n]
-                        continue
-
-                    #範囲が多く被っていなくて、self._num_picture回以上写真を撮っていたら
-                    else:
-                        # 今回の写真が保存している写真でsaliencyが最小のものと同じだった場合、写真の類似度が最大のものと交換
-                        if idx == -2:
-                            remove_index = self._cal_remove_index(picture_list, new_emmbedding)
-                            # 入れ替えしない場合
-                            if remove_index == len(picture_list):
-                                continue
-                            picture_list[remove_index] = [saliency[n], picture_range_map, new_emmbedding, caption]
-                            self._taken_picture_list[n] = picture_list
-                            self._taken_picture[n][remove_index] = observations[n]["rgb"]
-
-                            # 説明文を生成し、similarityの差を計算する
-                            pred_description = self.create_description(picture_list)
-                            after_sim = self.calculate_similarity(pred_description, description)
-                            each_sim[n] = (after_sim - pre_sim)*10
-                            reward[n] += each_sim[n]
-                            continue
-
-                        # 今回の写真が保存してある写真の１つでもSaliencyが高かったらSaliencyが最小の保存写真と入れ替え
-                        elif idx != -1:
-                            sal_pre = picture_list[idx][0]
-                            picture_list[idx] = [saliency[n], picture_range_map, new_emmbedding, caption]
-                            self._taken_picture_list[n] = picture_list
-                            self._taken_picture[n][idx] = observations[n]["rgb"]
-
-                            # 説明文を生成し、similarityの差を計算する
-                            pred_description = self.create_description(picture_list)
-                            after_sim = self.calculate_similarity(pred_description, description)
-                            each_sim[n] = (after_sim - pre_sim)*10
-                            reward[n] += each_sim[n]
-                            continue
-
-                # 1つとでも多く被った場合
-                else:
-                    min_idx = -1
-                    #min_sal_k = 1000
-                    max_sal_k = 0.0
-                    idx_sal = -1
-                    # 多く被った写真のうち、saliencyが最小のものを計算
-                    # 多く被った写真のうち、被っている割合が多い写真とsaliencyを比較
-                    for k in range(len(cover_list)):
-                        idx_k = cover_list[k]
-                        if max_sal_k < cover_per_list[idx_k]:
-                            max_sal_k = cover_per_list[idx_k]
-                            min_idx = idx_k
-                            idx_sal = picture_list[idx_k][0]
-
-                    
-                    # 被った割合分小さくなったCIでも保存写真の中の最小のCIより大きかったら交換
-                    #if self._compareWithChangedSal(picture_range_map, pre_fog_of_war_map, cover_list, saliency[n], min_sal_k, min_idx) == True:
-                    res = self._compareWithChangedSal(picture_range_map, pre_fog_of_war_map, cover_list, saliency[n], idx_sal, min_idx)
-                    if res == 0:
-                        picture_list[min_idx] = [saliency[n], picture_range_map, new_emmbedding, caption]
-                        self._taken_picture_list[n] = picture_list
-                        self._taken_picture[n][min_idx] = observations[n]["rgb"]   
-                        
-                        # 説明文を生成し、similarityの差を計算する
-                        pred_description = self.create_description(picture_list)
-                        after_sim = self.calculate_similarity(pred_description, description)
-                        each_sim[n] = (after_sim - pre_sim)*10
-                        reward[n] += each_sim[n]
-                        continue
-                    # 被った割合分小さくなったCIと保存写真の中の最小のCIが等しかったら写真の類似度が最大のものを削除
-                    if res == 1:
-                        remove_index = self._cal_remove_index(picture_list, new_emmbedding)
-                        # 入れ替えしない場合
-                        if remove_index == len(picture_list):
-                            continue
-                        picture_list[remove_index] = [saliency[n], picture_range_map, new_emmbedding, caption]
-                        self._taken_picture_list[n] = picture_list
-                        self._taken_picture[n][remove_index] = observations[n]["rgb"]
-
-                        # 説明文を生成し、similarityの差を計算する
-                        pred_description = self.create_description(picture_list)
-                        after_sim = self.calculate_similarity(pred_description, description)
-                        each_sim[n] = (after_sim - pre_sim)*10
-                        reward[n] += each_sim[n]
-                        continue
+            for n in range(len(observations)):
+                self._taken_picture_list[n].append([pic_val[n], observations[n]["rgb"], rewards[n][6], rewards[n][7], infos[n]["explored_map"]])
                 
             reward = torch.tensor(reward, dtype=torch.float, device=self.device).unsqueeze(1)
             exp_area = torch.tensor(exp_area, dtype=torch.float, device=self.device).unsqueeze(1)
+            picture_value = torch.tensor(picture_value, dtype=torch.float, device=self.device).unsqueeze(1)
             similarity = torch.tensor(similarity, dtype=torch.float, device=self.device).unsqueeze(1)
-            each_sim = torch.tensor(each_sim, dtype=torch.float, device=self.device).unsqueeze(1)
+            bleu_score = torch.tensor(bleu_score, dtype=torch.float, device=self.device).unsqueeze(1)
+            rouge_1_score = torch.tensor(rouge_1_score, dtype=torch.float, device=self.device).unsqueeze(1)
+            rouge_2_score = torch.tensor(rouge_2_score, dtype=torch.float, device=self.device).unsqueeze(1)
+            rouge_L_score = torch.tensor(rouge_L_score, dtype=torch.float, device=self.device).unsqueeze(1)
+            meteor_score = torch.tensor(meteor_score, dtype=torch.float, device=self.device).unsqueeze(1)
+            pas_score = torch.tensor(pas_score, dtype=torch.float, device=self.device).unsqueeze(1)
+            hes_score = torch.tensor(hes_score, dtype=torch.float, device=self.device).unsqueeze(1)
             
             current_episode_reward += reward
             current_episode_exp_area += exp_area
-            current_episode_each_sim += each_sim
             next_episodes = self.envs.current_episodes()
             envs_to_pause = []
 
-            for i in range(n_envs):
+            for n in range(n_envs):
                 if len(stats_episodes) >= self.config.TEST_EPISODE_COUNT:
                     break
-                """
-                if (
-                    next_episodes[i].scene_id,
-                    next_episodes[i].episode_id,
-                ) in stats_episodes:
-                    envs_to_pause.append(i)
-                """
 
                 # episode ended
-                if not_done_masks[i].item() == 0:
+                if not_done_masks[n].item() == 0:
                     # use scene_id + episode_id as unique id for storing stats
-                    _episode_id = current_episodes[i].episode_id
+                    _episode_id = current_episodes[n].episode_id
                     while (current_episodes[n].scene_id, _episode_id) in stats_episodes:
                         _episode_id = str(int(_episode_id) + 1)
 
-                    description = self.description_df[self.description_df["scene_id"]==current_episodes[i].scene_id[-15:-4]]["description"].item()
-                    pred_description = self.create_description(self._taken_picture_list[i])
-                    similarity[i] = self.calculate_similarity(pred_description, description)
-                    current_episode_similarity[i] += similarity[i]
-                    pic_sim[i] = self._calculate_pic_sim(self._taken_picture_list[i])
-                    current_episode_picsim[i] += pic_sim[i]
+                    # 写真の選別
+                    self._taken_picture_list[n], picture_value[n] = self._select_pictures(self._taken_picture_list[n])
+                    #self._taken_picture_list[n], picture_value[n] = self._select_random_pictures(self._taken_picture_list[n])
+                    #results_image, positions_x, positions_y = self._create_results_image(self._taken_picture_list[n], infos[n]["explored_map"])
+                    results_image, image_list = self._create_results_image2(self._taken_picture_list[n], infos[n]["explored_map"])
+                    
+                    # Ground-Truth descriptionと生成文との類似度の計算 
+                    similarity_list = []
+                    bleu_list = []
+                    rouge_1_list = []
+                    rouge_2_list = []
+                    rouge_L_list = []
+                    meteor_list = []
+                    pas_list = []
 
-                    for j in range(len(self._taken_picture_list[i])):
-                        sum_saliency[i] += self._taken_picture_list[i][j][0]
-                    sum_saliency[i] /= len(self._taken_picture_list[i])
-                    sum_saliency = torch.tensor(sum_saliency, dtype=torch.float, device=current_episode_reward.device).unsqueeze(1)
-                    current_episode_sum_saliency[i] += sum_saliency[i][0].item()
+                    #pred_description = self.create_description(self._taken_picture_list[n])
+                    pred_description = ""
+                    if results_image is not None:
+                        #pred_description = self.create_description_from_results_image(results_image, positions_x, positions_y)
+                        pred_description = self.create_description_sometimes(image_list, results_image)
+
+                    s_lemmatized = self.lemmatize_and_filter(pred_description)                        
+                    description_list = self.description_dict[current_episodes[n].scene_id[-15:-4]]
+                    hes_sentence_list = [pred_description]
+                        
+                    for i in range(5):
+                        description = description_list[i]
+                        hes_sentence_list.append(description)
+
+                        sim_score = self.calculate_similarity(pred_description, description)
+                        bleu = self.calculate_bleu(description, pred_description)
+                        rouge_scores = self.calculate_rouge(description, pred_description)
+                        rouge_1 = rouge_scores['rouge1'].fmeasure
+                        rouge_2 = rouge_scores['rouge2'].fmeasure
+                        rouge_L = rouge_scores['rougeL'].fmeasure
+                        meteor = self.calculate_meteor(description, pred_description)
+                        pas = self.calculate_pas(s_lemmatized, description)
+
+                        similarity_list.append(sim_score)
+                        bleu_list.append(bleu)
+                        rouge_1_list.append(rouge_1)
+                        rouge_2_list.append(rouge_2)
+                        rouge_L_list.append(rouge_L)
+                        meteor_list.append(meteor)
+                        pas_list.append(pas)
+                        
+                    similarity[n] = sum(similarity_list) / len(similarity_list)
+                    pic_sim[n] = self._calculate_pic_sim(self._taken_picture_list[n])                
+                    
+                    bleu_score[n] = sum(bleu_list) / len(bleu_list)
+                    rouge_1_score[n] = sum(rouge_1_list) / len(rouge_1_list)
+                    rouge_2_score[n] = sum(rouge_2_list) / len(rouge_2_list)
+                    rouge_L_score[n] = sum(rouge_L_list) / len(rouge_L_list)
+                    meteor_score[n] = sum(meteor_list) / len(meteor_list)
+                    pas_score[n] = sum(pas_list) / len(pas_list)    
+                    hes_score[n] = self.eval_model(hes_sentence_list).item()
+
+                    reward[n] += similarity[n]*10
+                    current_episode_reward += similarity[n]*10
+                    
+                    # average of picture value par 1 picture
+                    current_episode_picture_value[n] += picture_value[n]
+                    current_episode_similarity[n] += similarity[n]
+                    current_episode_picsim[n] += pic_sim[n]
+                    current_episode_bleu_score[n] += bleu_score[n]
+                    current_episode_rouge_1_score[n] += rouge_1_score[n]
+                    current_episode_rouge_2_score[n] += rouge_2_score[n]
+                    current_episode_rouge_L_score[n] += rouge_L_score[n]
+                    current_episode_meteor_score[n] += meteor_score[n]
+                    current_episode_pas_score[n] += pas_score[n]
+                    current_episode_hes_score[n] += hes_score[n]
                     
                     # save description
                     out_path = os.path.join("log/" + date + "/eval/description.txt")
                     with open(out_path, 'a') as f:
                         # print関数でファイルに出力する
-                        print(str(current_episodes[i].scene_id[-15:-4]) + "_" + str(_episode_id), file=f)
+                        print(str(current_episodes[n].scene_id[-15:-4]) + "_" + str(_episode_id), file=f)
                         print(description, file=f)
                         print(pred_description,file=f)
-                        print(similarity[i].item(),file=f)
-                                    
+                        print(similarity[n].item(),file=f)
+                        print(hes_score[n].item(), file=f)
+                        #print(location_input, file=f)
+
                     pbar.update()
                     episode_stats = dict()
-                    episode_stats["reward"] = current_episode_reward[i].item()
-                    episode_stats["exp_area"] = current_episode_exp_area[i].item()
-                    episode_stats["similarity"] = current_episode_similarity[i].item()
-                    episode_stats["pic_sim"] = current_episode_picsim[i].item()
-                    episode_stats["each_sim"] = current_episode_each_sim[i].item()
-                    episode_stats["sum_saliency"] = current_episode_sum_saliency[i].item()
+                    episode_stats["reward"] = current_episode_reward[n].item()
+                    episode_stats["exp_area"] = current_episode_exp_area[n].item()
+                    episode_stats["picture_value"] = current_episode_picture_value[n].item()
+                    episode_stats["similarity"] = current_episode_similarity[n].item()
+                    episode_stats["pic_sim"] = current_episode_picsim[n].item()
+                    episode_stats["bleu_score"] = current_episode_bleu_score[n].item()
+                    episode_stats["rouge_1_score"] = current_episode_rouge_1_score[n].item()
+                    episode_stats["rouge_2_score"] = current_episode_rouge_2_score[n].item()
+                    episode_stats["rouge_L_score"] = current_episode_rouge_L_score[n].item()
+                    episode_stats["meteor_score"] = current_episode_meteor_score[n].item()
+                    episode_stats["pas_score"] = current_episode_pas_score[n].item()
+                    episode_stats["hes_score"] = current_episode_hes_score[n].item()
                     
                     episode_stats.update(
-                        self._extract_scalars_from_info(infos[i])
+                        self._extract_scalars_from_info(infos[n])
                     )
-                    current_episode_reward[i] = 0
-                    current_episode_exp_area[i] = 0
-                    current_episode_similarity[i] = 0
-                    current_episode_picsim[i] = 0
-                    current_episode_each_sim[i] = 0
-                    current_episode_sum_saliency[i] = 0
-                    
+                    current_episode_reward[n] = 0
+                    current_episode_exp_area[n] = 0
+                    current_episode_picture_value[n] = 0
+                    current_episode_similarity[n] = 0
+                    current_episode_picsim[n] = 0
+                    current_episode_bleu_score[n] = 0
+                    current_episode_rouge_1_score[n] = 0
+                    current_episode_rouge_2_score[n] = 0
+                    current_episode_rouge_L_score[n] = 0
+                    current_episode_meteor_score[n] = 0
+                    current_episode_pas_score[n] = 0
+                    current_episode_hes_score[n] = 0
+
                     stats_episodes[
                         (
-                            current_episodes[i].scene_id,
+                            current_episodes[n].scene_id,
                             _episode_id,
                         )
                     ] = episode_stats
                     
                     raw_metrics_episodes[
-                        current_episodes[i].scene_id + '.' + 
+                        current_episodes[n].scene_id + '.' + 
                         _episode_id
-                    ] = infos[i]["raw_metrics"]
+                    ] = infos[n]["raw_metrics"]
 
                     if len(self.config.VIDEO_OPTION) > 0:
-                        if len(rgb_frames[i]) == 0:
-                            frame = observations_to_image(observations[i], infos[i], actions[i].cpu().numpy())
-                            rgb_frames[i].append(frame)
-                        picture = rgb_frames[i][-1]
-                        for j in range(50):
-                           rgb_frames[i].append(picture) 
-                        metrics=self._extract_scalars_from_info(infos[i])
-                        name_sim = similarity[i].item()
+                        if len(rgb_frames[n]) == 0:
+                            frame = observations_to_image(observations[n], infos[n], actions[n].cpu().numpy())
+                            rgb_frames[n].append(frame)
+                        picture = rgb_frames[n][-1]
+                        for j in range(20):
+                           rgb_frames[n].append(picture) 
+                        metrics=self._extract_scalars_from_info(infos[n])
+                        name_sim = similarity[n].item()
                         
-                        name_sim = str(len(stats_episodes)) + "-" + str(name_sim)[:4] + "-" + str(episode_stats["exp_area"])[:4]
+                        name_sim = str(len(stats_episodes)) + "-" + str(hes_score[n].item())[:4] + "-" + str(name_sim)[:4] + "-" + str(episode_stats["exp_area"])[:4]
                         generate_video(
                             video_option=self.config.VIDEO_OPTION,
                             video_dir=self.config.VIDEO_DIR+"/"+date,
-                            images=rgb_frames[i],
+                            images=rgb_frames[n],
                             episode_id=_episode_id,
                             metrics=metrics,
                             name_ci=name_sim,
                         )
         
                         # Save taken picture                        
-                        for j in range(len(self._taken_picture[i])):
-                            picture_name = f"episode={_episode_id}-{len(stats_episodes)}-{j}"
+                        for j in range(len(self._taken_picture_list[n])):
+                            value = self._taken_picture_list[n][j][0]
+                            picture_name = f"episode={_episode_id}-{len(stats_episodes)}-{j}-{value}"
                             dir_name = "./taken_picture/" + date 
                             os.makedirs(dir_name, exist_ok=True)
                         
-                            picture = Image.fromarray(np.uint8(self._taken_picture[i][j]))
+                            picture = Image.fromarray(np.uint8(self._taken_picture_list[n][j][1]))
                             file_path = dir_name + "/" + picture_name + ".png"
                             picture.save(file_path)
-
-                            # Save picture range map
-                            """
-                            eval_range_logger = self.log_manager.createLogWriter(f"range_{current_episodes[i].episode_id}_{len(stats_episodes)}_{j}")
-                            range_map = self._taken_picture_list[i][j][1]
-                            for k in range(range_map.shape[0]):
-                                for l in range(range_map.shape[1]):
-                                    eval_range_logger.write(str(range_map[k][l]))
-                                eval_range_logger.writeLine()
-                            """
-                            
-                        rgb_frames[i] = []
                         
-                    self._taken_picture[i] = []
-                    self._taken_picture_list[i] = []
+                        if results_image is not None:
+                            results_image.save(f"/gs/fs/tga-aklab/matsumoto/Main/taken_picture/{date}/episode={_episode_id}-{len(stats_episodes)}.png")    
+                    
+                    rgb_frames[n] = []
+                    self._taken_picture_list[n] = []
 
                 # episode continues
                 elif len(self.config.VIDEO_OPTION) > 0:
-                    frame = observations_to_image(observations[i], infos[i], actions[i].cpu().numpy())
-                    rgb_frames[i].append(frame)
-            """
-            (
-                self.envs,
-                test_recurrent_hidden_states,
-                not_done_masks,
-                current_episode_reward,
-                current_episode_exp_area,
-                current_episode_similarity,
-                current_episode_picsim,
-                current_episode_each_sim,
-                current_episode_sum_saliency,
-                prev_actions,
-                batch,
-                rgb_frames,
-            ) = self._pause_envs(
-                envs_to_pause,
-                self.envs,
-                test_recurrent_hidden_states,
-                not_done_masks,
-                current_episode_reward,
-                current_episode_exp_area,
-                current_episode_similarity,
-                current_episode_picsim,
-                current_episode_each_sim,
-                current_episode_sum_saliency,
-                prev_actions,
-                batch,
-                rgb_frames,
-            )
-            """
+                    frame = observations_to_image(observations[n], infos[n], actions[n].cpu().numpy())
+                    rgb_frames[n].append(frame)
 
         num_episodes = len(stats_episodes)
         
@@ -1495,10 +1618,11 @@ class PPOTrainerO(BaseRLTrainerOracle):
 
         metrics = {k: v for k, v in aggregated_stats.items() if k != "reward"}
 
+        logger.info("HES Score: " + str(metrics["hes_score"]))
         logger.info("Similarity: " + str(metrics["similarity"]))
-        logger.info("Pic_Sim: " + str(metrics["pic_sim"]))
-        logger.info("Sum Saliency: " + str(metrics["sum_saliency"]))
-        eval_metrics_logger.writeLine(str(step_id)+","+str(metrics["exp_area"])+","+str(metrics["similarity"])+","+str(metrics["pic_sim"])+","+str(metrics["each_sim"])+","+str(metrics["sum_saliency"])+","+str(metrics["raw_metrics.agent_path_length"]))
+        logger.info("PAS Score: " + str(metrics["pas_score"]))
+        logger.info("BLUE: " + str(metrics["bleu_score"]) + ", ROUGE-1: " + str(metrics["rouge_1_score"]) + ", ROUGE-2: " + str(metrics["rouge_2_score"]) + ", ROUGE-L: " + str(metrics["rouge_L_score"]) + ", METEOR: " + str(metrics["meteor_score"]))
+        eval_metrics_logger.writeLine(str(step_id)+","+str(metrics["exp_area"])+","+str(metrics["similarity"])+","+str(metrics["picture_value"])+","+str(metrics["pic_sim"])+","+str(metrics["bleu_score"])+","+str(metrics["rouge_1_score"])+","+str(metrics["rouge_2_score"])+","+str(metrics["rouge_L_score"])+","+str(metrics["meteor_score"])+","+str(metrics["pas_score"])+","+str(metrics["hes_score"])+","+str(metrics["raw_metrics.agent_path_length"]))
 
         self.envs.close()
         
@@ -1538,35 +1662,8 @@ class PPOTrainerO(BaseRLTrainerOracle):
 
         self.actor_critic = self.agent.actor_critic
         
-        self._taken_picture = []
         self._taken_picture_list = []
-        
-        # Sentence-BERTモデルの読み込み
-        self.bert_model = SentenceTransformer('all-MiniLM-L6-v2')
-        
-        # lavisモデルの読み込み
-        self.lavis_model, self.vis_processors, _ = load_model_and_preprocess(name="blip_caption", model_type="base_coco", is_eval=True, device=self.device)
-        self.bert_model.to(self.device)
-        self.lavis_model.to(self.device)
-
-        # Load the clip model
-        self.clip_model, self.preprocess = clip.load('ViT-B/32', self.device)
-        
-        # ファイルを読み込んで行ごとにリストに格納する
-        with open('data/scene_datasets/mp3d/description.txt', 'r') as file:
-            lines = file.readlines()
-
-        # scene id と文章を抽出してデータフレームに変換する
-        scene_ids = []
-        descriptions = []
-        for i in range(0, len(lines), 3):
-            scene_ids.append(lines[i].strip())
-            descriptions.append(lines[i+2].strip())
-
-        self.description_df = pd.DataFrame({'scene_id': scene_ids, 'description': descriptions})
-        
         for i in range(self.envs.num_envs):
-            self._taken_picture.append([])
             self._taken_picture_list.append([])
         
         observations = self.envs.reset()
@@ -1574,10 +1671,16 @@ class PPOTrainerO(BaseRLTrainerOracle):
 
         current_episode_reward = torch.zeros(self.envs.num_envs, 1, device=self.device)
         current_episode_exp_area = torch.zeros(self.envs.num_envs, 1, device=self.device)
+        current_episode_picture_value = torch.zeros(self.envs.num_envs, 1, device=self.device)
         current_episode_similarity = torch.zeros(self.envs.num_envs, 1, device=self.device)
         current_episode_picsim = torch.zeros(self.envs.num_envs, 1, device=self.device)
-        current_episode_each_sim = torch.zeros(self.envs.num_envs, 1, device=self.device)
-        current_episode_sum_saliency = torch.zeros(self.envs.num_envs, 1, device=self.device)
+        current_episode_bleu_score = torch.zeros(self.envs.num_envs, 1, device=self.device)
+        current_episode_rouge_1_score = torch.zeros(self.envs.num_envs, 1, device=self.device)
+        current_episode_rouge_2_score = torch.zeros(self.envs.num_envs, 1, device=self.device)
+        current_episode_rouge_L_score = torch.zeros(self.envs.num_envs, 1, device=self.device)
+        current_episode_meteor_score = torch.zeros(self.envs.num_envs, 1, device=self.device)
+        current_episode_pas_score = torch.zeros(self.envs.num_envs, 1, device=self.device)
+        current_episode_hes_score = torch.zeros(self.envs.num_envs, 1, device=self.device)
         
         test_recurrent_hidden_states = torch.zeros(
             self.actor_critic.net.num_recurrent_layers,
@@ -1595,17 +1698,19 @@ class PPOTrainerO(BaseRLTrainerOracle):
         ]  # type: List[List[np.ndarray]]
         if len(self.config.VIDEO_OPTION) > 0:
             os.makedirs(self.config.VIDEO_DIR+"/"+date, exist_ok=True)
-
+        self.step = 0
         pbar = tqdm.tqdm(total=self.config.TEST_EPISODE_COUNT)
         while (
             len(stats_episodes) < self.config.TEST_EPISODE_COUNT
             and self.envs.num_envs > 0
         ):
+            #logger.info(f"######### step={self.step} #########")
+            self.step += 1
             current_episodes = self.envs.current_episodes()
 
             actions = []
             for _ in range(self.config.NUM_PROCESSES):
-                a = random.randrange(4)
+                a = random.randrange(3)
                 actions.append([a])
                 
             actions = torch.tensor(actions, dtype=torch.long, device=self.device)
@@ -1624,188 +1729,235 @@ class PPOTrainerO(BaseRLTrainerOracle):
             )
             
             reward = []
-            saliency = []
+            pic_val = []
+            picture_value = []
             similarity = []
             pic_sim = []
             exp_area = [] # 探索済みのエリア()
-            exp_area_pre = []
-            fog_of_war_map = []
-            top_down_map = [] 
-            each_sim = []
-            sum_saliency = []
+            bleu_score = []
+            rouge_1_score = []
+            rouge_2_score = []
+            rouge_L_score = []
+            meteor_score= []
+            pas_score = []
+            hes_score = []
             n_envs = self.envs.num_envs
-            for i in range(n_envs):
-                reward.append(rewards[i][0])
-                saliency.append(rewards[i][1])
+
+            for n in range(n_envs):
+                reward.append(rewards[n][0])
+                pic_val.append(rewards[n][1])
+                picture_value.append(0)
                 similarity.append(0)
                 pic_sim.append(0)
-                exp_area.append(rewards[i][2]-rewards[i][3])
-                exp_area_pre.append(rewards[i][3])
-                fog_of_war_map.append(infos[i]["picture_range_map"]["fog_of_war_mask"])
-                top_down_map.append(infos[i]["picture_range_map"]["map"])
-                each_sim.append(0)
-                sum_saliency.append(0)
+                exp_area.append(rewards[n][2])
+                bleu_score.append(0)
+                rouge_1_score.append(0)
+                rouge_2_score.append(0)
+                rouge_L_score.append(0)
+                meteor_score.append(0)
+                pas_score.append(0)
+                hes_score.append(0)
                 
             for n in range(len(observations)):
-                #TAKE_PICTUREが呼び出されたかを検証
-                if saliency[n] != -1:
-                    picture_list = self._taken_picture_list[n]
-                    
-                    description = self.description_df[self.description_df["scene_id"]==current_episodes[n].scene_id[-15:-4]]["description"].item()
-                    pred_description = self.create_description(picture_list)
-                    pre_sim = self.calculate_similarity(pred_description, description)
+                self._taken_picture_list[n].append([pic_val[n], observations[n]["rgb"], rewards[n][6], rewards[n][7]])
 
-                    caption = self._create_caption(observations[n]["rgb"])
-                    #new_emmbedding = self._create_new_description_embedding(caption)
-                    new_emmbedding = self._create_new_image_embedding(observations[n]["rgb"])
-
-                    picture_range_map = self._create_picture_range_map(top_down_map[n], fog_of_war_map[n])
-                    
-                    # self._num_picture回未満写真を撮っていたらそのまま保存
-                    if len(picture_list) < self._num_picture:
-                        picture_list.append([saliency[n], picture_range_map, new_emmbedding, caption])
-                        [saliency[n], picture_range_map, new_emmbedding, caption]
-                        self._taken_picture[n].append(observations[n]["rgb"])
-                        self._taken_picture_list[n] = picture_list
-                        
-                        # 説明文を生成し、similarityの差を計算する
-                        pred_description = self.create_description(picture_list)
-                        after_sim = self.calculate_similarity(pred_description, description)
-                        each_sim[n] = (after_sim - pre_sim)*10
-                        reward[n] += each_sim[n]
-                        continue
-                
-                    # ランダムに写真を入れ替え
-                    idx = random.randrange(self._num_picture+1)
-                    
-                    # 入れ替えなし
-                    if idx == self._num_picture:
-                        continue
-                    
-                    # idxと入れ替える
-                    picture_list[idx] = [saliency[n], picture_range_map, new_emmbedding, caption]
-                    self._taken_picture_list[n] = picture_list
-                    self._taken_picture[n][idx] = observations[n]["rgb"]
-                
-                    # 説明文を生成し、similarityの差を計算する
-                    pred_description = self.create_description(picture_list)
-                    after_sim = self.calculate_similarity(pred_description, description)
-                    each_sim[n] = (after_sim - pre_sim)*10
-                    reward[n] += each_sim[n]
-                    
             reward = torch.tensor(reward, dtype=torch.float, device=self.device).unsqueeze(1)
             exp_area = torch.tensor(exp_area, dtype=torch.float, device=self.device).unsqueeze(1)
-            similarity = torch.tensor(similarity, dtype=torch.float, device=current_episode_reward.device).unsqueeze(1)
-            each_sim = torch.tensor(each_sim, dtype=torch.float, device=current_episode_reward.device).unsqueeze(1)
-
+            picture_value = torch.tensor(picture_value, dtype=torch.float, device=self.device).unsqueeze(1)
+            similarity = torch.tensor(similarity, dtype=torch.float, device=self.device).unsqueeze(1)
+            bleu_score = torch.tensor(bleu_score, dtype=torch.float, device=self.device).unsqueeze(1)
+            rouge_1_score = torch.tensor(rouge_1_score, dtype=torch.float, device=self.device).unsqueeze(1)
+            rouge_2_score = torch.tensor(rouge_2_score, dtype=torch.float, device=self.device).unsqueeze(1)
+            rouge_L_score = torch.tensor(rouge_L_score, dtype=torch.float, device=self.device).unsqueeze(1)
+            meteor_score = torch.tensor(meteor_score, dtype=torch.float, device=self.device).unsqueeze(1)
+            pas_score = torch.tensor(pas_score, dtype=torch.float, device=self.device).unsqueeze(1)
+            hes_score = torch.tensor(hes_score, dtype=torch.float, device=self.device).unsqueeze(1)
+            
             current_episode_reward += reward
             current_episode_exp_area += exp_area
-            current_episode_each_sim += each_sim
             next_episodes = self.envs.current_episodes()
             envs_to_pause = []
 
-            for i in range(n_envs):
+            for n in range(n_envs):
                 if len(stats_episodes) >= self.config.TEST_EPISODE_COUNT:
                     break
+                """
+                if (next_episodes[n].scene_id, next_episodes[n].episode_id) in stats_episodes:
+                    envs_to_pause.append(n)
+                """
 
                 # episode ended
-                if not_done_masks[i].item() == 0:
-                    _episode_id = current_episodes[i].episode_id
-                    while (current_episodes[i].scene_id, _episode_id) in stats_episodes:
+                if not_done_masks[n].item() == 0:
+                    # use scene_id + episode_id as unique id for storing stats
+                    _episode_id = current_episodes[n].episode_id
+                    while (current_episodes[n].scene_id, _episode_id) in stats_episodes:
                         _episode_id = str(int(_episode_id) + 1)
-                    description = self.description_df[self.description_df["scene_id"]==current_episodes[i].scene_id[-15:-4]]["description"].item()
-                    pred_description = self.create_description(self._taken_picture_list[i])
-                    similarity[i] = self.calculate_similarity(pred_description, description)
-                    #reward[i] += (similarity[i] * 10)
-                    current_episode_similarity[i] += similarity[i]
-                    pic_sim[i] = self._calculate_pic_sim(self._taken_picture_list[i])
-                    current_episode_picsim[i] += pic_sim[i]
 
-                    for j in range(len(self._taken_picture_list[i])):
-                        sum_saliency[i] += self._taken_picture_list[i][j][0]
-                    sum_saliency[i] /= len(self._taken_picture_list[i])
-                    sum_saliency = torch.tensor(sum_saliency, dtype=torch.float, device=current_episode_reward.device).unsqueeze(1)
-                    current_episode_sum_saliency[i] += sum_saliency[i][0].item()
+                    # 写真の選別
+                    self._taken_picture_list[n], picture_value[n] = self._select_random_pictures(self._taken_picture_list[n])
+                    #results_image, positions_x, positions_y = self._create_results_image(self._taken_picture_list[n], infos[n]["explored_map"])
+                    results_image, image_list = self._create_results_image2(self._taken_picture_list[n], infos[n]["explored_map"])
+                        
+                    # Ground-Truth descriptionと生成文との類似度の計算 
+                    similarity_list = []
+                    bleu_list = []
+                    rouge_1_list = []
+                    rouge_2_list = []
+                    rouge_L_list = []
+                    meteor_list = []
+                    pas_list = []
 
+                    #pred_description = self.create_description(self._taken_picture_list[n])
+                    pred_description = ""
+                    if results_image is not None:
+                        #pred_description = self.create_description_from_results_image(results_image, positions_x, positions_y)
+                        pred_description = self.create_description_sometimes(image_list, results_image)
+                    
+                    s_lemmatized = self.lemmatize_and_filter(pred_description)
+                    description_list = self.description_dict[current_episodes[n].scene_id[-15:-4]]
+                    hes_sentence_list = [pred_description]
+                    
+                    for i in range(5):
+                        description = description_list[i]
+                        hes_sentence_list.append(description)
+
+                        sim_score = self.calculate_similarity(pred_description, description)
+                        bleu = self.calculate_bleu(description, pred_description)
+                        rouge_scores = self.calculate_rouge(description, pred_description)
+                        rouge_1 = rouge_scores['rouge1'].fmeasure
+                        rouge_2 = rouge_scores['rouge2'].fmeasure
+                        rouge_L = rouge_scores['rougeL'].fmeasure
+                        meteor = self.calculate_meteor(description, pred_description)
+                        pas = self.calculate_pas(s_lemmatized, description)
+
+                        similarity_list.append(sim_score)
+                        bleu_list.append(bleu)
+                        rouge_1_list.append(rouge_1)
+                        rouge_2_list.append(rouge_2)
+                        rouge_L_list.append(rouge_L)
+                        meteor_list.append(meteor)
+                        pas_list.append(pas)
+                        
+                    similarity[n] = sum(similarity_list) / len(similarity_list)
+                    pic_sim[n] = self._calculate_pic_sim(self._taken_picture_list[n])                
+                    
+                    bleu_score[n] = sum(bleu_list) / len(bleu_list)
+                    rouge_1_score[n] = sum(rouge_1_list) / len(rouge_1_list)
+                    rouge_2_score[n] = sum(rouge_2_list) / len(rouge_2_list)
+                    rouge_L_score[n] = sum(rouge_L_list) / len(rouge_L_list)
+                    meteor_score[n] = sum(meteor_list) / len(meteor_list)
+                    pas_score[n] = sum(pas_list) / len(pas_list)
+                    hes_score[n] = self.eval_model(hes_sentence_list).item()
+
+                    reward[n] += similarity[n]*10
+                    current_episode_reward += similarity[n]*10
+                        
+                    current_episode_picture_value[n] += picture_value[n]
+                    current_episode_similarity[n] += similarity[n]
+                    current_episode_picsim[n] += pic_sim[n]
+                    current_episode_bleu_score[n] += bleu_score[n]
+                    current_episode_rouge_1_score[n] += rouge_1_score[n]
+                    current_episode_rouge_2_score[n] += rouge_2_score[n]
+                    current_episode_rouge_L_score[n] += rouge_L_score[n]
+                    current_episode_meteor_score[n] += meteor_score[n]
+                    current_episode_pas_score[n] += pas_score[n]
+                    current_episode_hes_score[n] += hes_score[n]
+                    
                     # save description
-                    out_path = os.path.join("log/" + date + "/random/description.txt")
+                    out_path = os.path.join("log/" + date + "/random3/description.txt")
                     with open(out_path, 'a') as f:
                         # print関数でファイルに出力する
-                        print(str(current_episodes[i].scene_id[-15:-4]) + "_" + str(_episode_id), file=f)
+                        print(str(current_episodes[n].scene_id[-15:-4]) + "_" + str(_episode_id), file=f)
                         print(description, file=f)
                         print(pred_description, file=f)
-                        print(similarity[i].item(), file=f)
-                                    
+                        print(similarity[n].item(), file=f)
+                        #print(location_input, file=f)
+                                        
                     pbar.update()
                     episode_stats = dict()
-                    episode_stats["reward"] = current_episode_reward[i].item()
-                    episode_stats["exp_area"] = current_episode_exp_area[i].item()
-                    episode_stats["similarity"] = current_episode_similarity[i].item()
-                    episode_stats["pic_sim"] = current_episode_picsim[i].item()
-                    episode_stats["each_sim"] = current_episode_each_sim[i].item()
-                    episode_stats["sum_saliency"] = current_episode_sum_saliency[i].item()
+                    episode_stats["reward"] = current_episode_reward[n].item()
+                    episode_stats["exp_area"] = current_episode_exp_area[n].item()
+                    episode_stats["picture_value"] = current_episode_picture_value[n].item()
+                    episode_stats["similarity"] = current_episode_similarity[n].item()
+                    episode_stats["pic_sim"] = current_episode_picsim[n].item()
+                    episode_stats["bleu_score"] = current_episode_bleu_score[n].item()
+                    episode_stats["rouge_1_score"] = current_episode_rouge_1_score[n].item()
+                    episode_stats["rouge_2_score"] = current_episode_rouge_2_score[n].item()
+                    episode_stats["rouge_L_score"] = current_episode_rouge_L_score[n].item()
+                    episode_stats["meteor_score"] = current_episode_meteor_score[n].item()
+                    episode_stats["pas_score"] = current_episode_pas_score[n].item()
+                    episode_stats["hes_score"] = current_episode_hes_score[n].item()
                     
                     episode_stats.update(
-                        self._extract_scalars_from_info(infos[i])
+                        self._extract_scalars_from_info(infos[n])
                     )
-                    current_episode_reward[i] = 0
-                    current_episode_exp_area[i] = 0
-                    current_episode_similarity[i] = 0
-                    current_episode_picsim[i] = 0
-                    current_episode_each_sim[i] = 0
-                    # use scene_id + episode_id as unique id for storing stats
+                    current_episode_reward[n] = 0
+                    current_episode_exp_area[n] = 0
+                    current_episode_picture_value[n] = 0
+                    current_episode_similarity[n] = 0
+                    current_episode_picsim[n] = 0
+                    current_episode_bleu_score[n] = 0
+                    current_episode_rouge_1_score[n] = 0
+                    current_episode_rouge_2_score[n] = 0
+                    current_episode_rouge_L_score[n] = 0
+                    current_episode_meteor_score[n] = 0
+                    current_episode_pas_score[n] = 0
+                    current_episode_hes_score[n] = 0
+
                     stats_episodes[
                         (
-                            current_episodes[i].scene_id,
+                            current_episodes[n].scene_id,
                             _episode_id,
                         )
                     ] = episode_stats
-                    
+                        
                     raw_metrics_episodes[
-                        current_episodes[i].scene_id + '.' + 
+                        current_episodes[n].scene_id + '.' + 
                         _episode_id
-                    ] = infos[i]["raw_metrics"]
-                    
+                    ] = infos[n]["raw_metrics"]
+                        
 
                     if len(self.config.VIDEO_OPTION) > 0:
-                        if len(rgb_frames[i]) == 0:
-                            frame = observations_to_image(observations[i], infos[i], actions[i].cpu().numpy())
-                            rgb_frames[i].append(frame)
-                        picture = rgb_frames[i][-1]
-                        for j in range(50):
-                           rgb_frames[i].append(picture) 
-                        metrics=self._extract_scalars_from_info(infos[i])
-                        name_sim = similarity[i].item()
-                        
-                        name_sim = str(name_sim)[:4] + "-" + str(episode_stats["exp_area"])[:4] + "-" + str(len(stats_episodes))
+                        if len(rgb_frames[n]) == 0:
+                            frame = observations_to_image(observations[n], infos[n], actions[n].cpu().numpy())
+                            rgb_frames[n].append(frame)
+                        picture = rgb_frames[n][-1]
+                        for j in range(20):
+                            rgb_frames[n].append(picture) 
+                        metrics=self._extract_scalars_from_info(infos[n])
+                        name_sim = similarity[n].item()
+                            
+                        name_sim = str(len(stats_episodes)) + "-" + str(hes_score[n].item())[:4] + "-" + str(name_sim)[:4] + "-" + str(episode_stats["exp_area"])[:4]
                         generate_video(
                             video_option=self.config.VIDEO_OPTION,
                             video_dir=self.config.VIDEO_DIR+"/"+date,
-                            images=rgb_frames[i],
+                            images=rgb_frames[n],
                             episode_id=_episode_id,
                             metrics=metrics,
                             name_ci=name_sim,
                         )
-        
+            
                         # Save taken picture                        
-                        for j in range(len(self._taken_picture_list[i])):                                
-                            picture_name = "episode=" + str(_episode_id) + "-" + str(len(stats_episodes)) + "-" + str(j)
+                        for j in range(len(self._taken_picture_list[n])):
+                            value = self._taken_picture_list[n][j][0]
+                            picture_name = f"episode={_episode_id}-{len(stats_episodes)}-{j}-{value}"
                             dir_name = "./taken_picture/" + date 
                             os.makedirs(dir_name, exist_ok=True)
-                        
-                            picture = Image.fromarray(np.uint8(self._taken_picture[i][j]))
+                            
+                            picture = Image.fromarray(np.uint8(self._taken_picture_list[n][j][1]))
                             file_path = dir_name + "/" + picture_name + ".png"
                             picture.save(file_path)
                             
-                        rgb_frames[i] = []
-                        
-                    self._taken_picture[i] = []
-                    self._taken_picture_list[i] = []
+                        if results_image is not None:
+                            results_image.save(f"/gs/fs/tga-aklab/matsumoto/Main/taken_picture/{date}/episode={_episode_id}-{len(stats_episodes)}.png")    
+                    
+                    rgb_frames[n] = []
+                    self._taken_picture_list[n] = []
 
                 # episode continues
                 elif len(self.config.VIDEO_OPTION) > 0:
-                    frame = observations_to_image(observations[i], infos[i], actions[i].cpu().numpy())
-                    rgb_frames[i].append(frame)
+                    frame = observations_to_image(observations[n], infos[n], actions[n].cpu().numpy())
+                    rgb_frames[n].append(frame)
 
         num_episodes = len(stats_episodes)
         
@@ -1825,484 +1977,10 @@ class PPOTrainerO(BaseRLTrainerOracle):
 
         metrics = {k: v for k, v in aggregated_stats.items() if k != "reward"}
 
+        logger.info("HES Score: " + str(metrics["hes_score"]))
         logger.info("Similarity: " + str(metrics["similarity"]))
-        logger.info("Pic_Sim: " + str(metrics["pic_sim"]))
-        logger.info("Sum Saliency: " + str(metrics["sum_saliency"]))
-        eval_metrics_logger.writeLine(str(step_id) + "," + str(metrics["exp_area"]) + "," + str(metrics["similarity"]) + "," + str(metrics["pic_sim"]) + "," + str(metrics["each_sim"]) + "," + str(metrics["sum_saliency"]) + "," + str(metrics["raw_metrics.agent_path_length"]))
-
-        self.envs.close()
-        
-        
-    def random_eval2(self, log_manager: LogManager, date: str,) -> None:
-        #random action and select pictures by covered area
-        logger.info("RANDOM 2")
-        self.log_manager = log_manager
-        #ログ出力設定
-        #time, reward
-        eval_reward_logger = self.log_manager.createLogWriter("reward")
-        #time, exp_area, distance. path_length
-        eval_metrics_logger = self.log_manager.createLogWriter("metrics")
-
-        self.device = (
-            torch.device("cuda", self.config.TORCH_GPU_ID)
-            if torch.cuda.is_available()
-            else torch.device("cpu")
-        )
-        
-        config = self.config.clone()
-
-        ppo_cfg = config.RL.PPO
-
-        config.defrost()
-        config.TASK_CONFIG.DATASET.SPLIT = config.EVAL.SPLIT
-        config.freeze()
-
-        if len(self.config.VIDEO_OPTION) > 0:
-            config.defrost()
-            config.TASK_CONFIG.TASK.MEASUREMENTS.append("TOP_DOWN_MAP")
-            config.TASK_CONFIG.TASK.MEASUREMENTS.append("COLLISIONS")
-            config.freeze()
-
-        logger.info(f"env config: {config}")
-        self.envs = construct_envs(config, get_env_class(config.ENV_NAME))
-        self._setup_actor_critic_agent(ppo_cfg)
-
-        self.actor_critic = self.agent.actor_critic
-        
-        self._taken_picture = []
-        self._taken_picture_list = []
-        
-        # Sentence-BERTモデルの読み込み
-        self.bert_model = SentenceTransformer('all-MiniLM-L6-v2')
-        
-        # lavisモデルの読み込み
-        self.lavis_model, self.vis_processors, _ = load_model_and_preprocess(name="blip_caption", model_type="base_coco", is_eval=True, device=self.device)
-        self.bert_model.to(self.device)
-        self.lavis_model.to(self.device)
-        
-        # ファイルを読み込んで行ごとにリストに格納する
-        with open('data/scene_datasets/mp3d/description.txt', 'r') as file:
-            lines = file.readlines()
-
-        # scene id と文章を抽出してデータフレームに変換する
-        scene_ids = []
-        descriptions = []
-        for i in range(0, len(lines), 3):
-            scene_ids.append(lines[i].strip())
-            descriptions.append(lines[i+2].strip())
-
-        self.description_df = pd.DataFrame({'scene_id': scene_ids, 'description': descriptions})
-        
-        for i in range(self.envs.num_envs):
-            self._taken_picture.append([])
-            self._taken_picture_list.append([])
-        
-        observations = self.envs.reset()
-        batch = batch_obs(observations, device=self.device)
-
-        current_episode_reward = torch.zeros(self.envs.num_envs, 1, device=self.device)
-        current_episode_exp_area = torch.zeros(self.envs.num_envs, 1, device=self.device)
-        current_episode_similarity = torch.zeros(self.envs.num_envs, 1, device=self.device)
-        current_episode_picsim = torch.zeros(self.envs.num_envs, 1, device=self.device)
-        current_episode_each_sim = torch.zeros(self.envs.num_envs, 1, device=self.device)
-        current_episode_sum_saliency = torch.zeros(self.envs.num_envs, 1, device=self.device)
-        
-        test_recurrent_hidden_states = torch.zeros(
-            self.actor_critic.net.num_recurrent_layers,
-            self.config.NUM_PROCESSES,
-            ppo_cfg.hidden_size,
-            device=self.device,
-        )
-        prev_actions = torch.zeros(self.config.NUM_PROCESSES, 1, device=self.device, dtype=torch.long)
-        not_done_masks = torch.zeros(self.config.NUM_PROCESSES, 1, device=self.device)
-        stats_episodes = dict()  # dict of dicts that stores stats per episode
-        raw_metrics_episodes = dict()
-
-        rgb_frames = [
-            [] for _ in range(self.config.NUM_PROCESSES)
-        ]  # type: List[List[np.ndarray]]
-        if len(self.config.VIDEO_OPTION) > 0:
-            os.makedirs(self.config.VIDEO_DIR+"/"+date, exist_ok=True)
-
-        pbar = tqdm.tqdm(total=self.config.TEST_EPISODE_COUNT)
-        while (
-            len(stats_episodes) < self.config.TEST_EPISODE_COUNT
-            and self.envs.num_envs > 0
-        ):
-            current_episodes = self.envs.current_episodes()
-
-            actions = []
-            for _ in range(self.config.NUM_PROCESSES):
-                a = random.randrange(4)
-                actions.append([a])
-                
-            actions = torch.tensor(actions, dtype=torch.long, device=self.device)
-                
-            pre_ac = torch.zeros(prev_actions.shape[0], 1, device=self.device, dtype=torch.long)
-            for i in range(prev_actions.shape[0]):
-                pre_ac[i] = prev_actions[i]
-
-            prev_actions.copy_(actions)
-
-            outputs = self.envs.step([a[0].item() for a in actions])
- 
-            observations, rewards, dones, infos = [
-                list(x) for x in zip(*outputs)
-            ]
-            batch = batch_obs(observations, device=self.device)
-            
-            not_done_masks = torch.tensor(
-                [[0.0] if done else [1.0] for done in dones],
-                dtype=torch.float,
-                device=self.device,
-            )
-            
-            reward = []
-            saliency = []
-            similarity = []
-            pic_sim = []
-            exp_area = [] # 探索済みのエリア()
-            exp_area_pre = []
-            fog_of_war_map = []
-            top_down_map = [] 
-            top_map = []
-            each_sim = []
-            sum_saliency = []
-            n_envs = self.envs.num_envs
-            for i in range(n_envs):
-                reward.append(rewards[i][0])
-                saliency.append(rewards[i][1])
-                similarity.append(0)
-                pic_sim.append(0)
-                exp_area.append(rewards[i][2]-rewards[i][3])
-                exp_area_pre.append(rewards[i][3])
-                fog_of_war_map.append(infos[i]["picture_range_map"]["fog_of_war_mask"])
-                top_down_map.append(infos[i]["picture_range_map"]["map"])
-                top_map.append(infos[i]["top_down_map"]["map"])
-                each_sim.append(0)
-                sum_saliency.append(0)
-            
-            for n in range(len(observations)):
-                #TAKE_PICTUREが呼び出されたかを検証
-                if saliency[n] == -1:
-                    continue
-
-                # 2回連続でTAKE_PICTUREをした場合は保存しない
-                if pre_ac[n].item() == actions[n].item():
-                    continue
-
-                # 今回撮ったpicture(p_n)が保存してあるpicture(p_k)とかぶっているkを保存
-                cover_list = [] 
-                cover_per_list = []
-                picture_range_map = self._create_picture_range_map(top_down_map[n], fog_of_war_map[n])
-                
-                picture_list = self._taken_picture_list[n]
-                    
-                description = self.description_df[self.description_df["scene_id"]==current_episodes[n].scene_id[-15:-4]]["description"].item()
-                pred_description = self.create_description(picture_list)
-                pre_sim = self.calculate_similarity(pred_description, description)
-
-                caption = self._create_caption(observations[n]["rgb"])
-                #new_emmbedding = self._create_new_description_embedding(caption)
-                new_emmbedding = self._create_new_image_embedding(observations[n]["rgb"])
-
-                # p_kのそれぞれのpicture_range_mapのリスト
-                pre_fog_of_war_map = [sublist[1] for sublist in picture_list]
-
-                # それぞれと閾値より被っているか計算
-                idx = -1
-                min_sal = saliency[n]
-
-                for k in range(len(pre_fog_of_war_map)):
-                    # 閾値よりも被っていたらcover_listにkを追加
-                    check, per = self._check_percentage_of_fog(picture_range_map, pre_fog_of_war_map[k], threshold=0.1)
-                    cover_per_list.append(per)
-                    if check == True:
-                        cover_list.append(k)
-
-                    #saliencyの最小値の写真を探索(１つも被っていない時用)
-                    if (idx == -1) and (min_sal == picture_list[idx][0]):
-                        idx = -2
-                    elif min_sal > picture_list[idx][0]:
-                        idx = k
-                        min_sal = picture_list[idx][0]
-
-                # 今までの写真と多くは被っていない時
-                if len(cover_list) == 0:
-                    #範囲が多く被っていなくて、self._num_picture回未満写真を撮っていたらそのまま保存
-                    if len(picture_list) != self._num_picture:
-                        picture_list.append([saliency[n], picture_range_map, new_emmbedding, caption, steps])
-                        self._taken_picture[n].append(observations[n]["rgb"])
-                        self._taken_picture_list[n] = picture_list
-
-                        # 説明文を生成し、similarityの差を計算する
-                        pred_description = self.create_description(picture_list)
-                        after_sim = self.calculate_similarity(pred_description, description)
-                        each_sim[n] = (after_sim - pre_sim)*10
-                        reward[n] += each_sim[n]
-                        continue
-
-                    #範囲が多く被っていなくて、self._num_picture回以上写真を撮っていたら
-                    else:
-                        # 今回の写真が保存している写真でsaliencyが最小のものと同じだった場合、写真の類似度が最大のものと交換
-                        if idx == -2:
-                            remove_index = self._cal_remove_index(picture_list, new_emmbedding)
-                            # 入れ替えしない場合
-                            if remove_index == len(picture_list):
-                                continue
-                            picture_list[remove_index] = [saliency[n], picture_range_map, new_emmbedding, caption]
-                            self._taken_picture_list[n] = picture_list
-                            self._taken_picture[n][remove_index] = observations[n]["rgb"]
-
-                            # 説明文を生成し、similarityの差を計算する
-                            pred_description = self.create_description(picture_list)
-                            after_sim = self.calculate_similarity(pred_description, description)
-                            each_sim[n] = (after_sim - pre_sim)*10
-                            reward[n] += each_sim[n]
-                            continue
-
-                        # 今回の写真が保存してある写真の１つでもSaliencyが高かったらSaliencyが最小の保存写真と入れ替え
-                        elif idx != -1:
-                            sal_pre = picture_list[idx][0]
-                            picture_list[idx] = [saliency[n], picture_range_map, new_emmbedding, caption]
-                            self._taken_picture_list[n] = picture_list
-                            self._taken_picture[n][idx] = observations[n]["rgb"]
-
-                            # 説明文を生成し、similarityの差を計算する
-                            pred_description = self.create_description(picture_list)
-                            after_sim = self.calculate_similarity(pred_description, description)
-                            each_sim[n] = (after_sim - pre_sim)*10
-                            reward[n] += each_sim[n]
-                            continue
-
-                # 1つとでも多く被った場合
-                else:
-                    min_idx = -1
-                    #min_sal_k = 1000
-                    max_sal_k = 0.0
-                    idx_sal = -1
-                    # 多く被った写真のうち、saliencyが最小のものを計算
-                    # 多く被った写真のうち、被っている割合が多い写真とsaliencyを比較
-                    for k in range(len(cover_list)):
-                        idx_k = cover_list[k]
-                        """
-                        if picture_list[idx_k][0] < min_sal_k:
-                            min_sal_k = picture_list[idx_k][0]
-                            min_idx = idx_k
-                        """
-                        if max_sal_k < cover_per_list[idx_k]:
-                            max_sal_k = cover_per_list[idx_k]
-                            min_idx = idx_k
-                            idx_sal = picture_list[idx_k][0]
-
-                    
-                    # 被った割合分小さくなったCIでも保存写真の中の最小のCIより大きかったら交換
-                    #if self._compareWithChangedSal(picture_range_map, pre_fog_of_war_map, cover_list, saliency[n], min_sal_k, min_idx) == True:
-                    res = self._compareWithChangedSal(picture_range_map, pre_fog_of_war_map, cover_list, saliency[n], idx_sal, min_idx)
-                    if res == 0:
-                        picture_list[min_idx] = [saliency[n], picture_range_map, new_emmbedding, caption]
-                        self._taken_picture_list[n] = picture_list
-                        self._taken_picture[n][min_idx] = observations[n]["rgb"]   
-                        
-                        # 説明文を生成し、similarityの差を計算する
-                        pred_description = self.create_description(picture_list)
-                        after_sim = self.calculate_similarity(pred_description, description)
-                        each_sim[n] = (after_sim - pre_sim)*10
-                        reward[n] += each_sim[n]
-                        continue
-                    # 被った割合分小さくなったCIと保存写真の中の最小のCIが等しかったら写真の類似度が最大のものを削除
-                    if res == 1:
-                        remove_index = self._cal_remove_index(picture_list, new_emmbedding)
-                        # 入れ替えしない場合
-                        if remove_index == len(picture_list):
-                            continue
-                        picture_list[remove_index] = [saliency[n], picture_range_map, new_emmbedding, caption]
-                        self._taken_picture_list[n] = picture_list
-                        self._taken_picture[n][remove_index] = observations[n]["rgb"]
-
-                        # 説明文を生成し、similarityの差を計算する
-                        pred_description = self.create_description(picture_list)
-                        after_sim = self.calculate_similarity(pred_description, description)
-                        each_sim[n] = (after_sim - pre_sim)*10
-                        reward[n] += each_sim[n]
-                        continue
-                
-            reward = torch.tensor(reward, dtype=torch.float, device=self.device).unsqueeze(1)
-            exp_area = torch.tensor(exp_area, dtype=torch.float, device=self.device).unsqueeze(1)
-            similarity = torch.tensor(similarity, dtype=torch.float, device=current_episode_reward.device).unsqueeze(1)
-            each_sim = torch.tensor(each_sim, dtype=torch.float, device=current_episode_reward.device).unsqueeze(1)
-
-            current_episode_reward += reward
-            current_episode_exp_area += exp_area
-            current_episode_each_sim += each_sim
-            next_episodes = self.envs.current_episodes()
-            envs_to_pause = []
-
-            for i in range(n_envs):
-                if (
-                    next_episodes[i].scene_id,
-                    next_episodes[i].episode_id,
-                ) in stats_episodes:
-                    envs_to_pause.append(i)
-
-                # episode ended
-                if not_done_masks[i].item() == 0:
-                    description = self.description_df[self.description_df["scene_id"]==current_episodes[i].scene_id[-15:-4]]["description"].item()
-                    pred_description = self.create_description(self._taken_picture_list[i])
-                    similarity[i] = self.calculate_similarity(pred_description, description)
-                    current_episode_similarity[i] += similarity[i]
-                    pic_sim[i] = self._calculate_pic_sim(self._taken_picture_list[i])
-                    current_episode_picsim[i] += pic_sim[i]
-                    
-                    for j in range(len(self._taken_picture_list[i])):
-                        sum_saliency[i] += self._taken_picture_list[i][j][0]
-                    sum_saliency[i] /= len(self._taken_picture_list[i])
-                    sum_saliency = torch.tensor(sum_saliency, dtype=torch.float, device=current_episode_reward.device).unsqueeze(1)
-                    current_episode_sum_saliency[i] += sum_saliency[i][0].item()
-
-                    # save description
-                    out_path = os.path.join("log/" + date + "/eval/description.txt")
-                    with open(out_path, 'a') as f:
-                        # print関数でファイルに出力する
-                        print(str(current_episodes[i].scene_id[-15:-4]) + "_" + str(current_episodes[i].episode_id), file=f)
-                        print(description, file=f)
-                        print(pred_description,file=f)
-                        print(similarity[i].item(),file=f)
-                                    
-                    pbar.update()
-                    episode_stats = dict()
-                    episode_stats["reward"] = current_episode_reward[i].item()
-                    episode_stats["exp_area"] = current_episode_exp_area[i].item()
-                    episode_stats["similarity"] = current_episode_similarity[i].item()
-                    episode_stats["pic_sim"] = current_episode_picsim[i].item()
-                    episode_stats["each_sim"] = current_episode_each_sim[i].item()
-                    episode_stats["sum_saliency"] = current_episode_sum_saliency[i].item()
-                    
-                    episode_stats.update(
-                        self._extract_scalars_from_info(infos[i])
-                    )
-                    current_episode_reward[i] = 0
-                    current_episode_exp_area[i] = 0
-                    current_episode_similarity[i] = 0
-                    current_episode_picsim[i] = 0
-                    current_episode_each_sim[i] = 0
-                    current_episode_sum_saliency[i] = 0
-                    # use scene_id + episode_id as unique id for storing stats
-                    stats_episodes[
-                        (
-                            current_episodes[i].scene_id,
-                            current_episodes[i].episode_id,
-                        )
-                    ] = episode_stats
-                    
-                    raw_metrics_episodes[
-                        current_episodes[i].scene_id + '.' + 
-                        current_episodes[i].episode_id
-                    ] = infos[i]["raw_metrics"]
-
-                    if len(self.config.VIDEO_OPTION) > 0:
-                        if len(rgb_frames[i]) == 0:
-                            frame = observations_to_image(observations[i], infos[i], actions[i].cpu().numpy())
-                            rgb_frames[i].append(frame)
-                        picture = rgb_frames[i][-1]
-                        for j in range(50):
-                           rgb_frames[i].append(picture) 
-                        metrics=self._extract_scalars_from_info(infos[i])
-                        name_sim = similarity[i].item()
-                        
-                        name_sim = str(len(stats_episodes)) + "-" + str(name_sim)[:4] + "-" + str(episode_stats["exp_area"])[:4]
-                        generate_video(
-                            video_option=self.config.VIDEO_OPTION,
-                            video_dir=self.config.VIDEO_DIR+"/"+date,
-                            images=rgb_frames[i],
-                            episode_id=current_episodes[i].episode_id,
-                            metrics=metrics,
-                            name_ci=name_sim,
-                        )
-        
-                        # Save taken picture                        
-                        for j in range(len(self._taken_picture[i])):
-                            picture_name = f"episode={current_episodes[i].episode_id}-{len(stats_episodes)}-{j}"
-                            dir_name = "./taken_picture/" + date 
-                            os.makedirs(dir_name, exist_ok=True)
-                        
-                            picture = Image.fromarray(np.uint8(self._taken_picture[i][j]))
-                            file_path = dir_name + "/" + picture_name + ".png"
-                            picture.save(file_path)
-
-                            # Save picture range map
-                            """
-                            eval_range_logger = self.log_manager.createLogWriter(f"range_{current_episodes[i].episode_id}_{len(stats_episodes)}_{j}")
-                            range_map = self._taken_picture_list[i][j][1]
-                            for k in range(range_map.shape[0]):
-                                for l in range(range_map.shape[1]):
-                                    eval_range_logger.write(str(range_map[k][l]))
-                                eval_range_logger.writeLine()
-                            """
-                            
-                        rgb_frames[i] = []
-                        
-                    self._taken_picture[i] = []
-                    self._taken_picture_list[i] = []
-
-                # episode continues
-                elif len(self.config.VIDEO_OPTION) > 0:
-                    frame = observations_to_image(observations[i], infos[i], actions[i].cpu().numpy())
-                    rgb_frames[i].append(frame)
-
-            (
-                self.envs,
-                test_recurrent_hidden_states,
-                not_done_masks,
-                current_episode_reward,
-                current_episode_exp_area,
-                current_episode_similarity,
-                current_episode_picsim,
-                current_episode_each_sim,
-                current_episode_sum_saliency,
-                prev_actions,
-                batch,
-                rgb_frames,
-            ) = self._pause_envs(
-                envs_to_pause,
-                self.envs,
-                test_recurrent_hidden_states,
-                not_done_masks,
-                current_episode_reward,
-                current_episode_exp_area,
-                current_episode_similarity,
-                current_episode_picsim,
-                current_episode_each_sim,
-                current_episode_sum_saliency,
-                prev_actions,
-                batch,
-                rgb_frames,
-            )
-
-        num_episodes = len(stats_episodes)
-        
-        aggregated_stats = dict()
-        for stat_key in next(iter(stats_episodes.values())).keys():
-            aggregated_stats[stat_key] = (
-                sum([v[stat_key] for v in stats_episodes.values()])
-                / num_episodes
-            )
-
-        for k, v in aggregated_stats.items():
-            logger.info(f"Average episode {k}: {v:.4f}")
-        
-
-        step_id = checkpoint_index
-        if "extra_state" in ckpt_dict and "step" in ckpt_dict["extra_state"]:
-            step_id = ckpt_dict["extra_state"]["step"]
-        
-        eval_reward_logger.writeLine(str(step_id) + "," + str(aggregated_stats["reward"]))
-
-        metrics = {k: v for k, v in aggregated_stats.items() if k != "reward"}
-
-        logger.info("Similarity: " + str(metrics["similarity"]))
-        logger.info("Pic_Sim: " + str(metrics["pic_sim"]))
-        logger.info("Sum Saliency: " + str(metrics["sum_saliency"]))
-        eval_metrics_logger.writeLine(str(step_id)+","+str(metrics["exp_area"])+","+str(metrics["similarity"])+","+str(metrics["pic_sim"])+","+str(metrics["each_sim"])+","+str(metrics["sum_saliency"])+","+str(metrics["raw_metrics.agent_path_length"]))
+        logger.info("PAS Score: " + str(metrics["pas_score"]))
+        logger.info("BLUE: " + str(metrics["bleu_score"]) + ", ROUGE-1: " + str(metrics["rouge_1_score"]) + ", ROUGE-2: " + str(metrics["rouge_2_score"]) + ", ROUGE-L: " + str(metrics["rouge_L_score"]) + ", METEOR: " + str(metrics["meteor_score"]))
+        eval_metrics_logger.writeLine(str(step_id)+","+str(metrics["exp_area"])+","+str(metrics["similarity"])+","+str(metrics["picture_value"])+","+str(metrics["pic_sim"])+","+str(metrics["bleu_score"])+","+str(metrics["rouge_1_score"])+","+str(metrics["rouge_2_score"])+","+str(metrics["rouge_L_score"])+","+str(metrics["meteor_score"])+","+str(metrics["pas_score"])+","+str(metrics["hes_score"])+","+str(metrics["raw_metrics.agent_path_length"]))
 
         self.envs.close()

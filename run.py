@@ -22,7 +22,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--run-type",
-        choices=["train", "train2", "train3", "eval", "eval2", "eval3", "random", "random2", "random3"],
+        choices=["train", "train2", "train3", "train4", "eval", "eval2", "eval3", "eval4", "random", "random2", "random3", "random4"],
         default=None,
         help="run type of the experiment (train or eval)",
     )
@@ -69,7 +69,7 @@ def test(run_type: str, opts=None):
     
     config = get_config(exp_config)
     
-    if run_type in ["train", "train2", "train3"]:
+    if run_type in ["train", "train2", "train3", "train4"]:
         datadate = "" 
         config.defrost()
         config.NUM_PROCESSES = 24
@@ -78,40 +78,45 @@ def test(run_type: str, opts=None):
         #config.RL.PPO.num_mini_batch = 1
         config.TORCH_GPU_ID = 0
         config.freeze()
-    elif run_type in ["eval", "eval2", "eval3"]:
+    elif run_type in ["eval", "eval2", "eval3", "eval4"]:
         datadate = "24-07-25 06-34-14"
-        datadate = "24-08-11 21-55-35"
+        #datadate = "24-08-11 21-55-35"
         current_ckpt = 120
-        current_ckpt = 165
+        #current_ckpt = 165
 
         config.defrost()
         config.RL.PPO.num_mini_batch = 4
-        config.NUM_PROCESSES = 24
+        config.NUM_PROCESSES = 28
         #config.RL.PPO.num_mini_batch = 1
         #config.NUM_PROCESSES = 1
         config.TEST_EPISODE_COUNT = 220
+        config.TEST_EPISODE_COUNT = 110
         config.VIDEO_OPTION = ["disk"]
+        #config.VIDEO_OPTION = []
         config.TORCH_GPU_ID = 1
+        config.TASK_CONFIG.DATASET.DATA_PATH: "data/datasets/maximuminfo/v4/{split}/{split}.json.gz"
         config.freeze()
-    elif run_type in ["random", "random2", "random3"]:
+    elif run_type in ["random", "random2", "random3", "random4"]:
         datadate = "" 
         config.defrost()
         config.TASK_CONFIG.DATASET.SPLIT = "val"
         config.RL.PPO.num_mini_batch = 4
-        config.NUM_PROCESSES = 24
+        config.NUM_PROCESSES = 28
         #config.NUM_PROCESSES = 8
         #config.RL.PPO.num_mini_batch = 1
         #config.NUM_PROCESSES = 1
-        config.TEST_EPISODE_COUNT = 120
+        config.TEST_EPISODE_COUNT = 220
+        config.TEST_EPISODE_COUNT = 110
         config.VIDEO_OPTION = ["disk"]
         config.TORCH_GPU_ID = 1
+        config.TASK_CONFIG.DATASET.DATA_PATH: "data/datasets/maximuminfo/v4/{split}/{split}.json.gz"
         config.freeze()
     
     random.seed(config.TASK_CONFIG.SEED)
     np.random.seed(config.TASK_CONFIG.SEED)
     
     config.defrost()
-    config.TASK_CONFIG.DATASET.DATA_PATH = "data/datasets/maximuminfo/v3/{split}/{split}.json.gz"
+    #config.TASK_CONFIG.DATASET.DATA_PATH = "data/datasets/maximuminfo/v3/{split}/{split}.json.gz"
     config.TRAINER_NAME = agent_type
     config.TASK_CONFIG.TRAINER_NAME = agent_type
     config.CHECKPOINT_FOLDER = "cpt/" + start_date
@@ -123,6 +128,11 @@ def test(run_type: str, opts=None):
             trainer_init = baseline_registry.get_trainer("oracle2")
         elif run_type in ["train3", "eval3", "random3"]:
             trainer_init = baseline_registry.get_trainer("oracle3")
+            config.defrost()
+            config.NUM_PROCESSES = 24
+            config.freeze()
+        elif run_type in ["train4", "eval4", "random4"]:
+            trainer_init = baseline_registry.get_trainer("oracle4")
         else:
             trainer_init = baseline_registry.get_trainer("oracle")
             #trainer_init = PPOTrainerO
@@ -159,17 +169,17 @@ def test(run_type: str, opts=None):
     logger.info("-----------------------------------")
 
     try:
-        if run_type in ["train", "train2", "train3"]:
+        if run_type in ["train", "train2", "train3", "train4"]:
             #フォルダがない場合は、作成
             p_dir = pathlib.Path(config.CHECKPOINT_FOLDER)
             if not p_dir.exists():
                 p_dir.mkdir(parents=True)
                 
             trainer.train(log_manager, start_date)
-        elif run_type in ["eval", "eval2", "eval3"]:
+        elif run_type in ["eval", "eval2", "eval3", "eval4"]:
             trainer.eval(log_manager, start_date, current_ckpt)
         
-        elif run_type in ["random", "random2", "random3"]:
+        elif run_type in ["random", "random2", "random3", "random4"]:
             trainer.random_eval(log_manager, start_date)
     finally:
         end_date = datetime.datetime.now().strftime('%y-%m-%d %H-%M-%S') 

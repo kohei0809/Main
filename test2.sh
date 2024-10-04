@@ -18,5 +18,4 @@ cd /gs/fs/tga-aklab/matsumoto/Main
 . /home/7/ur02047/anaconda3/etc/profile.d/conda.sh
 conda activate habitat2
 
-#python test_llava/test_llava.py
-python create_viewer_video.py
+python make_dataset.py

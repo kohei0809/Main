@@ -2,7 +2,7 @@
 #$ -cwd
 #$ -l node_f=1
 #$ -j y
-#$ -l h_rt=8:00:00
+#$ -l h_rt=93:00:00
 #$ -o output/o.$JOB_ID
 
 . /etc/profile.d/modules.sh
@@ -21,6 +21,7 @@ pwd
 conda activate habitat2
 
 #CUDA_LAUNCH_BLOCKING=1 python run.py --run-type train3
-CUDA_LAUNCH_BLOCKING=1 python run.py --run-type train2
+#CUDA_LAUNCH_BLOCKING=1 python run.py --run-type train2
+CUDA_LAUNCH_BLOCKING=1 python run.py --run-type train
 #python run.py --run-type eval2
 #python research_picture_value.py

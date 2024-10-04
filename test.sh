@@ -2,7 +2,7 @@
 #$ -cwd
 #$ -l node_q=1
 #$ -j y
-#$ -l h_rt=00:05:00
+#$ -l h_rt=00:30:00
 #$ -o output/o.$JOB_ID
 #$ -p -4
 
@@ -15,9 +15,13 @@ cd /gs/fs/tga-aklab/matsumoto/Main
 . /home/7/ur02047/anaconda3/etc/profile.d/conda.sh
 conda activate habitat2
 
-cd SentenceBert_FineTuning
+
+#python test_llava/test_llava.py
+python human_metrics.py
+#cd SentenceBert_FineTuning
 #python finetuning_sbert.py
 #python finetuning_sbert2.py
 #python finetuning_sbert3.py
 #python finetuning_sbert4.py
-python ShowingFinetuninng.py
+#python finetuning_sbert5.py
+#python ShowingFinetuninng.py
