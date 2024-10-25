@@ -26,6 +26,7 @@ CONFIG_FILE_SEPARATOR = ","
 # -----------------------------------------------------------------------------
 _C = CN()
 _C.SEED = 100
+_C.SEED = 42
 # -----------------------------------------------------------------------------
 # ENVIRONMENT
 # -----------------------------------------------------------------------------
@@ -51,6 +52,7 @@ _C.TASK.TYPE = "Nav-v0"
 _C.TASK.SUCCESS_DISTANCE = 0.2
 _C.TASK.SENSORS = []
 _C.TASK.MEASUREMENTS = []
+_C.TASK.AREA_REWARD = ""
 #_C.TASK.GOAL_SENSOR_UUID = "multiobjectgoal"
 _C.TASK.POSSIBLE_ACTIONS = ["STOP", "MOVE_FORWARD", "TURN_LEFT", "TURN_RIGHT"]
 # -----------------------------------------------------------------------------
@@ -140,6 +142,23 @@ _C.TASK.GPS_SENSOR.DIMENSIONALITY = 2
 _C.TASK.PROXIMITY_SENSOR = CN()
 _C.TASK.PROXIMITY_SENSOR.TYPE = "ProximitySensor"
 _C.TASK.PROXIMITY_SENSOR.MAX_DETECTION_RADIUS = 2.0
+# -----------------------------------------------------------------------------
+# POSE_ESTIMATION_RGB_SENSOR
+# -----------------------------------------------------------------------------
+_C.TASK.POSE_ESTIMATION_RGB_SENSOR = CN()
+_C.TASK.POSE_ESTIMATION_RGB_SENSOR.TYPE = "PoseEstimationRGBSensor"
+_C.TASK.POSE_ESTIMATION_RGB_SENSOR.HEIGHT = 480
+_C.TASK.POSE_ESTIMATION_RGB_SENSOR.WIDTH = 640
+# -----------------------------------------------------------------------------
+# POSE_ESTIMATION_MASK_SENSOR
+# -----------------------------------------------------------------------------
+_C.TASK.POSE_ESTIMATION_MASK_SENSOR = CN()
+_C.TASK.POSE_ESTIMATION_MASK_SENSOR.TYPE = "PoseEstiomationMaskSensor"
+# -----------------------------------------------------------------------------
+# DELTA SENSOR
+# -----------------------------------------------------------------------------
+_C.TASK.DELTA_SENSOR = CN()
+_C.TASK.DELTA_SENSOR.TYPE = "DeltaSensor"
 # -----------------------------------------------------------------------------
 # PICTURE MEASUREMENT
 # -----------------------------------------------------------------------------
@@ -247,13 +266,23 @@ _C.TASK.EXPLORED_MAP.DRAW_GOAL_POSITIONS = True
 _C.TASK.EXPLORED_MAP.DRAW_GOAL_AABBS = True
 
 # -----------------------------------------------------------------------------
-# SmoothMapValue MEASUREMENT
+# SmoothCoverage MEASUREMENT
 # -----------------------------------------------------------------------------
-_C.TASK.SMOOTH_MAP_VALUE = CN()
-_C.TASK.SMOOTH_MAP_VALUE.TYPE = "SmoothMapValue"
-_C.TASK.SMOOTH_MAP_VALUE.NUM_TOPDOWN_MAP_SAMPLE_POINTS = 20000
-_C.TASK.SMOOTH_MAP_VALUE.MAP_RESOLUTION = 1250
-
+_C.TASK.SMOOTH_COVERAGE = CN()
+_C.TASK.SMOOTH_COVERAGE.TYPE = "SmoothCoverage"
+_C.TASK.SMOOTH_COVERAGE.NUM_TOPDOWN_MAP_SAMPLE_POINTS = 20000
+_C.TASK.SMOOTH_COVERAGE.MAP_RESOLUTION = 1250
+_C.TASK.SMOOTH_COVERAGE.FOG_OF_WAR = CN()
+_C.TASK.SMOOTH_COVERAGE.FOG_OF_WAR.DRAW = True
+_C.TASK.SMOOTH_COVERAGE.FOG_OF_WAR.VISIBILITY_DIST = 5.0
+_C.TASK.SMOOTH_COVERAGE.FOG_OF_WAR.FOV = 79
+# -----------------------------------------------------------------------------
+# NoveltyValue MEASUREMENT
+# -----------------------------------------------------------------------------
+_C.TASK.NOVELTY_VALUE = CN()
+_C.TASK.NOVELTY_VALUE.TYPE = "NoveltyValue"
+_C.TASK.NOVELTY_VALUE.NUM_TOPDOWN_MAP_SAMPLE_POINTS = 20000
+_C.TASK.NOVELTY_VALUE.MAP_RESOLUTION = 1250
 # -----------------------------------------------------------------------------
 # PictureRangeMap MEASUREMENT
 # -----------------------------------------------------------------------------

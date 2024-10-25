@@ -71,3 +71,18 @@ def compute_pixel_coverage(instance_seg, object_id):
     cand_mask = instance_seg == object_id
     score = cand_mask.sum().astype(np.float64) / cand_mask.size
     return score
+
+def compute_heading_from_quaternion(rotation: np.quaternion) -> float:
+    r"""Converts np.quaternion to a heading angle scalar.
+
+    Args:
+        rotation - represents a counter-clockwise rotation about Y-axis.
+    Returns:
+        Heading angle with clockwise rotation from -Z to X being +ve.
+    """
+    direction_vector = np.array([0, 0, -1])  # Forward vector
+    heading_vector = quaternion_rotate_vector(rotation.inverse(), direction_vector)
+    # Flip sign to compute clockwise rotation
+    phi = -cartesian_to_polar(-heading_vector[2], heading_vector[0])[1]
+
+    return phi

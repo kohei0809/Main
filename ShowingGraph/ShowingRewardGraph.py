@@ -2,14 +2,15 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import pathlib
 
-date = "24-06-14 15-28-02"
-date = "24-07-25 06-34-14"
-
-mode = "train3"
+date = "24-10-05 21-07-23"
+date = "24-10-07 06-13-55"
+date = "24-10-02 01-50-40"
+date = "24-10-07 19-11-01"
+mode = "train5"
+#mode = "train"
 
 df = pd.read_csv(f"log/{date}/{mode}/reward.csv", names=['time', 'reward'], header=None)
 plt.plot(df['time'], df['reward'], color="blue", label="reward")
-
 
 #ラベルの追加
 plt.xlabel('Training Steps')

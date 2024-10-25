@@ -13,11 +13,11 @@ from nltk.corpus import stopwords
 from habitat.core.logging import logger
 
 # 必要なNLTKのリソースをダウンロード
-nltk.download('punkt')
-nltk.download('averaged_perceptron_tagger')
-nltk.download('wordnet')
-nltk.download('omw-1.4')
-nltk.download('stopwords')
+#nltk.download('punkt')
+#nltk.download('averaged_perceptron_tagger')
+#nltk.download('wordnet')
+#nltk.download('omw-1.4')
+#nltk.download('stopwords')
 
 
 # SBERT + MLPによる回帰モデルの定義

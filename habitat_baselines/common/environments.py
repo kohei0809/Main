@@ -117,11 +117,14 @@ class InfoRLEnv(RLEnv):
         self._reward_measure_name = self._rl_config.REWARD_MEASURE
         self._picture_measure_name = self._rl_config.PICTURE_MEASURE
 
-        self._previous_area = None
+        self._previous_area_reward = 0.0
+        self._previous_area_rate = 0.0
         
         self._map_resolution = (300, 300)
         self._coordinate_min = -120.3241-1e-6
         self._coordinate_max = 120.0399+1e-6
+
+        self.area_type = ["coverage", "novelty", "curiosity", "smooth-coverage", "reconstruction"]
         
         super().__init__(self._core_env_config, dataset)
         
@@ -134,7 +137,8 @@ class InfoRLEnv(RLEnv):
     def reset(self):
         self.fog_of_war_map_all = None
         observations = super().reset()
-        self._previous_area = 0.0
+        self._previous_area_reward = 0.0
+        self._previous_area_rate = 0.0
         
         self._scene_data = pd.DataFrame(columns=['object_name', 'id'])
         semantic_scene = self._env._sim._sim.semantic_scene
@@ -182,58 +186,90 @@ class InfoRLEnv(RLEnv):
                 
         return rate
 
-    def get_reward(self, observations, **kwargs):
-        reward = self._rl_config.SLACK_REWARD
-        ci = -1000
-        picture_value = -1
-        info = self.get_info(observations)
+    # 観測済みエリアの数を作成
+    def _cal_coverage_num(self, top_down_map, fog_of_war_map):
+        coverage_num = 0
 
-        if "smooth_map_value" in info:
-            smooth_current_area = info["smooth_map_value"]
-            area_reward = smooth_current_area / 50      
-            output = 0.0
-            reward += area_reward
-            #logger.info(f"smooth_current_area={smooth_current_area}, smooth_value={smooth_value}")
-        else:
+        for i in range(len(top_down_map)):
+            for j in range(len(top_down_map[0])):
+                # 探索可能範囲
+                if (top_down_map[i][j] != 0) and (fog_of_war_map[i][j] == 1):
+                    coverage_num += 1
+
+        return coverage_num
+
+
+    def get_reward(self, observations, **kwargs):
+        info = self.get_info(observations)
+        measure = self._env.get_metrics()[self._picture_measure_name]
+        picture_value = measure
+        # area報酬のみ
+        if self._core_env_config.AREA_REWARD in self.area_type:
+            reward = 0
             # area_rewardの計算
             _top_down_map = info["top_down_map"]["map"]
             _fog_of_war_map = info["top_down_map"]["fog_of_war_mask"]
 
             current_area = self._cal_explored_rate(_top_down_map, _fog_of_war_map)
-            current_area *= 10
-            # area_rewardを足す
-            area_reward = current_area - self._previous_area
-            reward += area_reward
+            
+            if self._core_env_config.AREA_REWARD == "coverage":
+                coverage_reward = self._cal_coverage_num(_top_down_map, _fog_of_war_map)
+                #logger.info(f"coverage_reward={coverage_reward}")
+                coverage_reward = coverage_reward * 0.01
+
+                reward = coverage_reward - self._previous_area_reward
+                self._previous_area_reward = coverage_reward
+                #logger.info(f"reward={reward}")
+            elif self._core_env_config.AREA_REWARD == "novelty":
+                novelty = info["novelty_value"]
+                reward = novelty * 0.01
+            elif self._core_env_config.AREA_REWARD == "curiosity":
+                reward = 0.0
+            elif self._core_env_config.AREA_REWARD == "reconstruction":
+                reward = 0.0
+            elif self._core_env_config.AREA_REWARD == "smooth-coverage": 
+                smooth_coverage = info["smooth_coverage"]
+                reward = smooth_coverage * 0.01
+                
+            area_rate_inc = current_area - self._previous_area_rate
+            #logger.info(f"area_rate_inc={area_rate_inc}")
+            self._previous_area_rate = current_area
+
+            return reward, area_rate_inc, picture_value, 0.0, self._take_picture(), self._scene_data, -1, -1
+
+        # area報酬以外も与える
+        else:
+            reward = self._rl_config.SLACK_REWARD
             output = 0.0
-            self._previous_area = current_area
-        
-        measure = self._env.get_metrics()[self._picture_measure_name]
-        picture_value = measure
 
-        agent_position = self._env._sim.get_agent_state().position
+            if "smooth_coverage" in info:
+                smooth_current_area = info["smooth_coverage"]
+                area_reward = smooth_current_area / 50      
+                reward += area_reward
+                #logger.info(f"smooth_current_area={smooth_current_area}, smooth_value={smooth_value}")
+            else:
+                # area_rewardの計算
+                _top_down_map = info["top_down_map"]["map"]
+                _fog_of_war_map = info["top_down_map"]["fog_of_war_mask"]
 
-        return reward, picture_value, area_reward, output, self._take_picture(), self._scene_data, agent_position[0], agent_position[2]
-        
-    def get_reward2(self, observations, **kwargs):
-        reward = self._rl_config.SLACK_REWARD
-        #reward = 0
-        ci = -1000
-        matrics = None
-        
-        agent_position = self._env._sim.get_agent_state().position
-        a_x, a_y = maps.to_grid(
-            agent_position[0],
-            agent_position[2],
-            self._coordinate_min,
-            self._coordinate_max,
-            self._map_resolution,
-        )
-        agent_position = np.array([a_x, a_y])
-    
+                coverage_reward = self._cal_coverage_num(_top_down_map, _fog_of_war_map)
+                #logger.info(f"coverage_reward={coverage_reward}")
+                coverage_reward = coverage_reward * 0.01
 
-        picture_value = self._env.get_metrics()["saliency"]
+                reward += (coverage_reward - self._previous_area_reward)
+                self._previous_area_reward = coverage_reward
 
-        return picture_value  
+                current_area = self._cal_explored_rate(_top_down_map, _fog_of_war_map)
+                current_area *= 10
+                # area_rewardを足す
+                area_reward = current_area - self._previous_area_rate
+                #reward += area_reward
+                area_rate_inc = current_area - self._previous_area_rate
+                self._previous_area_rate = current_area
+
+            agent_position = self._env._sim.get_agent_state().position
+
+            return reward, area_reward, picture_value, output, self._take_picture(), self._scene_data, agent_position[0], agent_position[2]
     
     def get_polar_angle(self):
         agent_state = self._env._sim.get_agent_state()

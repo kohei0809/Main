@@ -2,17 +2,15 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import pathlib
 
-date = "24-02-18 15-24-41"
-#date = "24-02-20 18-05-03"
-#date = "24-02-21 23-05-39"
-date = "24-06-14 15-28-02"
-date = "24-07-25 06-34-14"
-mode = "train3"
+date = "24-10-02 01-50-40"
+mode = "train5"
+mode = "train"
 
 df1 = pd.read_csv(f"log/{date}/{mode}/reward.csv", names=['time', 'reward'], header=None)
-df2 = pd.read_csv(f"log/{date}/{mode}/metrics.csv", names=['time', 'exp_area', 'similarity',  'picture_value', 'pic_sim', 'subgoal_reward', 'blue_score', 'rouge_1_score', 'rouge_2_score', 'rouge_L_score', 'meteor_score', 'path_length'], header=None)
+df2 = pd.read_csv(f"log/{date}/{mode}/metrics.csv", names=['time', 'exp_area', 'similarity',  'picture_value', 'pic_sim', 'subgoal_reward', 'blue_score', 'rouge_1_score', 'rouge_2_score', 'rouge_L_score', 'meteor_score', 'pas_score', 'hes_score', 'path_length'], header=None)
+
 plt.plot(df1['time'], df1['reward'], color="red", label="Reward")
-plt.plot(df2['time'], df2['similarity'], color="blue", label="Similarity")
+plt.plot(df2['time'], df2['hes_score'], color="blue", label="HES Score")
 plt.plot(df2['time'], df2['exp_area'], color="green", label="Exp Area")
 plt.plot(df2['time'], df2['subgoal_reward'], color="black", label="Sub-Goal Reward")
 

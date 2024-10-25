@@ -16,7 +16,6 @@ cd /gs/fs/tga-aklab/matsumoto/Main
 conda activate habitat2
 
 python ShowingGraph/ShowingRewardGraph.py
-python ShowingGraph/ShowingEachRewardGraph.py
+#python ShowingGraph/ShowingEachRewardGraph.py
 python ShowingGraph/ShowingActionGraph.py
 python ShowingGraph/ShowingExpAreaGraph.py
-#python ShowingGraph/ShowingSimilarityGraph.py

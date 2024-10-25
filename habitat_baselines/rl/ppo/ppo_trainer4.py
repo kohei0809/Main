@@ -61,11 +61,11 @@ from nltk import word_tokenize, pos_tag
 from nltk.corpus import stopwords
 from nltk.stem import WordNetLemmatizer
 # 必要なNLTKのリソースをダウンロード
-nltk.download('punkt')
-nltk.download('averaged_perceptron_tagger')
-nltk.download('wordnet')
-nltk.download('omw-1.4')
-nltk.download('stopwords')
+#nltk.download('punkt')
+#nltk.download('averaged_perceptron_tagger')
+#nltk.download('wordnet')
+#nltk.download('omw-1.4')
+#nltk.download('stopwords')
 
 
 # SBERT + MLPによる回帰モデルの定義
@@ -475,11 +475,11 @@ class PPOTrainerO4(BaseRLTrainerOracle):
         n_envs = self.envs.num_envs
         for n in range(n_envs):
             reward.append(rewards[n][0])
-            pic_val.append(rewards[n][1])
+            pic_val.append(rewards[n][2])
             picture_value.append(0)
             similarity.append(0)
             pic_sim.append(0)
-            exp_area.append(rewards[n][2])
+            exp_area.append(rewards[n][1])
             semantic_obs.append(observations[n]["semantic"])
             subgoal_reward.append(0)
             bleu_score.append(0)
@@ -1486,11 +1486,11 @@ class PPOTrainerO4(BaseRLTrainerOracle):
             n_envs = self.envs.num_envs
             for n in range(n_envs):
                 reward.append(rewards[n][0])
-                pic_val.append(rewards[n][1])
+                pic_val.append(rewards[n][2])
                 picture_value.append(0)
                 similarity.append(0)
                 pic_sim.append(0)
-                exp_area.append(rewards[n][2])
+                exp_area.append(rewards[n][1])
                 bleu_score.append(0)
                 rouge_1_score.append(0)
                 rouge_2_score.append(0)
@@ -1665,16 +1665,15 @@ class PPOTrainerO4(BaseRLTrainerOracle):
                         for j in range(20):
                            rgb_frames[n].append(picture) 
                         metrics=self._extract_scalars_from_info(infos[n])
-                        name_sim = similarity[n].item()
-                        
-                        name_sim = str(len(stats_episodes)) + "-" + str(hes_score[n].item())[:4] + "-" + str(name_sim)[:4] + "-" + str(episode_stats["exp_area"])[:4]
+
+                        name_hes = str(len(stats_episodes)) + "-" + str(hes_score[n].item())[:4] + "-" + str(episode_stats["exp_area"])[:4]
                         generate_video(
                             video_option=self.config.VIDEO_OPTION,
                             video_dir=self.config.VIDEO_DIR+"/"+date,
                             images=rgb_frames[n],
                             episode_id=_episode_id,
                             metrics=metrics,
-                            name_ci=name_sim,
+                            name_ci=name_hes,
                         )
         
                         # Save taken picture                        
@@ -1847,11 +1846,11 @@ class PPOTrainerO4(BaseRLTrainerOracle):
 
             for n in range(n_envs):
                 reward.append(rewards[n][0])
-                pic_val.append(rewards[n][1])
+                pic_val.append(rewards[n][2])
                 picture_value.append(0)
                 similarity.append(0)
                 pic_sim.append(0)
-                exp_area.append(rewards[n][2])
+                exp_area.append(rewards[n][1])
                 bleu_score.append(0)
                 rouge_1_score.append(0)
                 rouge_2_score.append(0)
@@ -2027,16 +2026,15 @@ class PPOTrainerO4(BaseRLTrainerOracle):
                         for j in range(20):
                             rgb_frames[n].append(picture) 
                         metrics=self._extract_scalars_from_info(infos[n])
-                        name_sim = similarity[n].item()
-                            
-                        name_sim = str(len(stats_episodes)) + "-" + str(hes_score[n].item())[:4] + "-" + str(name_sim)[:4] + "-" + str(episode_stats["exp_area"])[:4]
+
+                        name_hes = str(len(stats_episodes)) + "-" + str(hes_score[n].item())[:4] + "-" + str(episode_stats["exp_area"])[:4]
                         generate_video(
                             video_option=self.config.VIDEO_OPTION,
                             video_dir=self.config.VIDEO_DIR+"/"+date,
                             images=rgb_frames[n],
                             episode_id=_episode_id,
                             metrics=metrics,
-                            name_ci=name_sim,
+                            name_ci=name_hes,
                         )
             
                         # Save taken picture                        

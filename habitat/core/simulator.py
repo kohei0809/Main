@@ -14,6 +14,9 @@ from gym.spaces.dict_space import Dict as SpaceDict
 
 from habitat.config import Config
 from habitat.core.dataset import Episode
+from habitat.core.registry import registry
+
+from habitat_sim.simulator import Simulator
 
 
 @attr.s(auto_attribs=True)

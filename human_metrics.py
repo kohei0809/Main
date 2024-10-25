@@ -13,11 +13,11 @@ from nltk.stem import WordNetLemmatizer
 from habitat.core.logging import logger
 
 # 必要なNLTKのリソースをダウンロード
-nltk.download('punkt')
-nltk.download('averaged_perceptron_tagger')
-nltk.download('wordnet')
-nltk.download('omw-1.4')
-nltk.download('stopwords')
+#nltk.download('punkt')
+#nltk.download('averaged_perceptron_tagger')
+#nltk.download('wordnet')
+#nltk.download('omw-1.4')
+#nltk.download('stopwords')
 
 # 単語のステミング処理
 lemmatizer = WordNetLemmatizer()
@@ -176,7 +176,7 @@ eval_model = SBERTRegressionModel(sbert_model).to(device)
 eval_model.load_state_dict(torch.load(model_path))
 eval_model.eval() 
 
-for scene_idx in range(50, 55, 5):
+for scene_idx in range(0, 55, 5):
     for idx, name in enumerate(name_list):
         logger.info(f"-------------- {name}_{int(scene_idx/5)} --------------")
         pred_sentence = pred_sentence_list[int(scene_idx/5)][idx]

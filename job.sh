@@ -2,8 +2,9 @@
 #$ -cwd
 #$ -l node_f=1
 #$ -j y
-#$ -l h_rt=93:00:00
+#$ -l h_rt=24:00:00
 #$ -o output/o.$JOB_ID
+#$ -p -4
 
 . /etc/profile.d/modules.sh
 
@@ -20,8 +21,13 @@ pwd
 . /home/7/ur02047/anaconda3/etc/profile.d/conda.sh
 conda activate habitat2
 
+#CUDA_LAUNCH_BLOCKING=1 python run.py --run-type train5 --area-reward-type coverage
+#CUDA_LAUNCH_BLOCKING=1 python run.py --run-type train5 --area-reward-type novelty
+CUDA_LAUNCH_BLOCKING=1 python run.py --run-type train5 --area-reward-type smooth-coverage
+#CUDA_LAUNCH_BLOCKING=1 python run.py --run-type train5 --area-reward-type curiosity
+#CUDA_LAUNCH_BLOCKING=1 python run.py --run-type train5 --area-reward-type reconstruction
 #CUDA_LAUNCH_BLOCKING=1 python run.py --run-type train3
 #CUDA_LAUNCH_BLOCKING=1 python run.py --run-type train2
-CUDA_LAUNCH_BLOCKING=1 python run.py --run-type train
+#CUDA_LAUNCH_BLOCKING=1 python run.py --run-type train --area-reward-type coverage
 #python run.py --run-type eval2
 #python research_picture_value.py

@@ -3,11 +3,12 @@ import matplotlib.pyplot as plt
 import pathlib
 import numpy as np
 
-#date = "24-04-17 18-45-23"
-date = "24-06-14 15-28-02"
-date = "24-07-25 06-34-14"
+date = "24-10-05 21-07-23"
+date = "24-10-07 06-13-55"
+date = "24-10-02 01-50-40"
+date = "24-10-07 19-11-01"
+mode = "train5"
 #mode = "train"
-mode = "train3"
 
 df = pd.read_csv(f"log/{date}/{mode}/action_prob.csv", names=['time', 'forward', 'left', 'right', 'look_up', 'look_down', 'take_picture',], header=None)
 #plt.plot(df['time'], df['take_picture'], color="red", label="Take Picture")

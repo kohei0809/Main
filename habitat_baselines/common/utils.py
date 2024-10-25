@@ -18,6 +18,8 @@ import quaternion
 
 from habitat.core.logging import logger
 
+import random
+
 
 class Flatten(nn.Module):
     def forward(self, x):
@@ -63,10 +65,16 @@ class CategoricalNet(nn.Module):
         # 0行目が全てnanである場合、他の行をコピーした値にする
         for i in range(x.size(0)):
             if is_nan_row[i]:
-                logger.info("######## There is none #######")
+                logger.info(f"######## There is none i={i}#######")
                 #logger.info(pre_x)
                 #logger.info(x)
-                x[i] = x[~is_nan_row][0]
+                y = x[~is_nan_row]
+                if len(y) == 0:
+                    logger.info("len(y) == 0")
+                    y = torch.from_numpy(np.array([random.random() for _ in range(3)]))
+                    x[i] = y
+                else:
+                    x[i] = y[0]
 
         return CustomFixedCategorical(logits=x)
 
@@ -108,9 +116,12 @@ def batch_obs(
         transposed dict of lists of observations.
     """
     batch = defaultdict(list)
+    recon_sensor = ["delta", "pose_estimation_mask", "pose_refs"]
 
     for obs in observations:
         for sensor in obs:
+            if sensor in recon_sensor:
+                continue
             if sensor == "semantic":
                 obs[sensor] = obs[sensor].astype(np.int64)     
             

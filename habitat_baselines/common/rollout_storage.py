@@ -262,3 +262,41 @@ class RolloutStorageOracle:
             flattened tensor of size (t*n, ...)
         """
         return tensor.view(t * n, *tensor.size()[2:])
+
+
+class RolloutStorageReconstruction(object):
+    def __init__(
+        self, num_steps, num_processes, feat_shape, odometer_shape, num_pose_refs,
+    ):
+        self.obs_feats = torch.zeros(num_steps + 1, num_processes, *feat_shape)
+        self.obs_odometer = torch.zeros(num_steps + 1, num_processes, *odometer_shape)
+        self.tgt_feats = torch.zeros(num_processes, num_pose_refs, *feat_shape)
+        self.tgt_poses = torch.zeros(num_processes, num_pose_refs, 3)
+        self.tgt_masks = torch.zeros(num_processes, num_pose_refs, 1)
+        self.num_steps = num_steps
+        self.step = 0
+
+    def to(self, device):
+        self.obs_feats = self.obs_feats.to(device)
+        self.obs_odometer = self.obs_odometer.to(device)
+        self.tgt_feats = self.tgt_feats.to(device)
+        self.tgt_poses = self.tgt_poses.to(device)
+        self.tgt_masks = self.tgt_masks.to(device)
+
+    def insert(self, obs_feats, obs_odometer):
+        self.obs_feats[self.step + 1].copy_(obs_feats)
+        self.obs_odometer[self.step + 1].copy_(obs_odometer)
+
+        self.step = (self.step + 1) % self.num_steps
+
+    def after_update(self):
+        self.obs_feats[0].copy_(self.obs_feats[-1])
+        self.obs_odometer[0].copy_(self.obs_odometer[-1])
+
+    def reset(self):
+        self.obs_feats.fill_(0)
+        self.obs_odometer.fill_(0)
+        self.tgt_feats.fill_(0)
+        self.tgt_poses.fill_(0)
+        self.tgt_masks.fill_(1.0)
+        self.step = 0

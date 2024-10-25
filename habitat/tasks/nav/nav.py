@@ -16,6 +16,7 @@ import torch
 from torchvision import transforms
 from scipy import stats
 from scipy.ndimage import label
+import copy
 
 from habitat.config import Config
 from habitat.core.dataset import Dataset, Episode
@@ -39,8 +40,11 @@ from habitat.tasks.utils import (
     cartesian_to_polar,
     quaternion_from_coeff,
     quaternion_rotate_vector,
+    compute_heading_from_quaternion,
 )
 from habitat.utils.visualizations import fog_of_war, maps
+
+from reconstruction_model.common import quat_from_coeffs
 
 from TranSalNet.utils.data_process import preprocess_img, postprocess_img
 from TranSalNet.TranSalNet_Dense import TranSalNet
@@ -446,6 +450,216 @@ class ProximitySensor(Sensor):
         return self._sim.distance_to_closest_obstacle(
             current_position, self._max_detection_radius
         )
+
+RGBSENSOR_DIMENSION = 3
+@registry.register_sensor(name="PoseEstimationRGBSensor")
+class PoseEstimationRGBSensor(Sensor):
+    r"""Sensor for PoseEstimation observations.
+
+    Args:
+        sim: reference to the simulator for calculating task observations.
+        config: config for the PoseEstimation sensor.
+
+    Attributes:
+        _nRef: number of pose references
+    """
+
+    def __init__(
+        self, sim: Simulator, config: Config, *args: Any, **kwargs: Any
+        ):
+        self._sim = sim
+        self._nRef = 100
+        super().__init__(config=config)
+
+        self.current_episode_id = None
+
+    def _get_uuid(self, *args: Any, **kwargs: Any):
+        return "pose_refs"
+
+    def _get_sensor_type(self, *args: Any, **kwargs: Any):
+        return SensorTypes.COLOR
+
+    def _get_observation_space(self, *args: Any, **kwargs: Any):
+        return spaces.Box(
+            low=0,
+            high=255,
+            shape=(
+                self._nRef,
+                self.config.HEIGHT,
+                self.config.WIDTH,
+                RGBSENSOR_DIMENSION,
+            ),
+            dtype=np.uint8,
+        )
+
+    def get_observation(
+        self, observations, *args: Any, episode, **kwargs: Any
+    ):
+        episode_id = (episode.episode_id, episode.scene_id)
+        # Render the pose references only at the start of each episode.
+        if self.current_episode_id != episode_id:
+            self.current_episode_id = episode_id
+            #ref_positions = episode.pose_ref_positions
+            #ref_rotations = episode.pose_ref_rotations
+
+            ref_positions = []
+            ref_rotations = []
+            for _ in range(self._nRef):
+                position = self._sim.sample_navigable_point()            
+                angle = np.random.uniform(0, 2 * np.pi)
+                rotation = [0, np.sin(angle / 2), 0, np.cos(angle / 2)]
+                ref_positions.append(position)
+                ref_rotations.append(rotation)
+
+            start_position = episode.start_position
+            start_rotation = episode.start_rotation
+            start_quat = quat_from_coeffs(start_rotation)
+            # Measures the angle from forward to right directions.
+            start_heading = compute_heading_from_quaternion(start_quat)
+            xs, ys = -start_position[2], start_position[0]
+            ref_rgb = []
+            ref_reg = []
+            for position, rotation in zip(ref_positions, ref_rotations):
+                # Get data only from the RGB sensor
+                obs = self._sim.get_observations_at(position, rotation)["rgb"]
+                # remove alpha channel
+                #obs = obs[:, :, :RGBSENSOR_DIMENSION]
+                ref_rgb.append(obs)
+
+                rotation = quat_from_coeffs(rotation)
+                # Measures the angle from forward to right directions.
+                ref_heading = compute_heading_from_quaternion(rotation)
+                xr, yr = -position[2], position[0]
+                # Compute vector from start to ref assuming start is
+                # facing forward @ (0, 0)
+                rad_sr = np.sqrt((xr - xs) ** 2 + (yr - ys) ** 2)
+                phi_sr = np.arctan2(yr - ys, xr - xs) - start_heading
+                theta_sr = ref_heading - start_heading
+                # Normalize theta_sr
+                theta_sr = np.arctan2(np.sin(theta_sr), np.cos(theta_sr))
+                ref_reg.append((rad_sr, phi_sr, theta_sr, 0.0))
+
+            # Add dummy images to compensate for fewer than nRef references.
+            if len(ref_rgb) < self._nRef:
+                dummy_image = np.zeros_like(ref_rgb[0])
+                for i in range(len(ref_rgb), self._nRef):
+                    ref_rgb.append(dummy_image)
+                for i in range(len(ref_reg), self._nRef):
+                    ref_reg.append((0.0, 0.0, 0.0, 0.0))
+            self._pose_ref_rgb = np.stack(ref_rgb, axis=0)
+            self._pose_ref_reg = np.array(ref_reg)
+
+            return np.copy(self._pose_ref_rgb), np.copy(self._pose_ref_reg)
+
+        else:
+            return None, None
+
+
+@registry.register_sensor(name="PoseEstiomationMaskSensor")
+class PoseEstimationMaskSensor(Sensor):
+    r"""Sensor for PoseEstimation observations. Returns the mask
+    indicating which references are valid.
+
+    Args:
+        sim: reference to the simulator for calculating task observations.
+        config: config for the PoseEstimation sensor.
+
+    Attributes:
+        _nRef: number of pose references
+    """
+
+    def __init__(
+        self, sim: Simulator, config: Config, *args: Any, **kwargs: Any
+    ):
+        self._sim = sim
+        self._nRef = 100
+        super().__init__(config=config)
+
+        self.current_episode_id = None
+
+    def _get_uuid(self, *args: Any, **kwargs: Any):
+        return "pose_estimation_mask"
+
+    def _get_sensor_type(self, *args: Any, **kwargs: Any):
+        return SensorTypes.MEASUREMENT
+
+    def _get_observation_space(self, *args: Any, **kwargs: Any):
+        return spaces.Box(
+            low=-1000000.0, high=1000000.0, shape=(self._nRef,), dtype=np.float32,
+        )
+
+    def get_observation(
+        self, observations, *args: Any, episode, **kwargs: Any
+    ):
+        episode_id = (episode.episode_id, episode.scene_id)
+        if self.current_episode_id != episode_id:
+            pose_ref_mask = np.ones((self._nRef,))
+            #pose_ref_mask[len(episode.pose_ref_positions) :] = 0
+            self._pose_ref_mask = pose_ref_mask
+            return np.copy(self._pose_ref_mask)
+        else:
+            return None
+
+
+@registry.register_sensor(name="DeltaSensor")
+class DeltaSensor(Sensor):
+    r"""Sensor that returns the odometer readings from the previous action."""
+    def __init__(
+        self, sim: Simulator, config: Config, *args: Any, **kwargs: Any
+    ):
+        self._sim = sim
+        super().__init__(config=config)
+
+        self.current_episode_id = None
+        self.prev_position = None
+        self.prev_rotation = None
+        self.start_position = None
+        self.start_rotation = None
+        
+    def _get_uuid(self, *args: Any, **kwargs: Any):
+        return "delta"
+
+    def _get_sensor_type(self, *args: Any, **kwargs: Any):
+        return SensorTypes.PATH
+
+    def _get_observation_space(self, *args: Any, **kwargs: Any):
+        return spaces.Box(low=-1000000.0, high=1000000.0, shape=(4,), dtype=np.float32,)
+
+    def get_observation(
+        self, observations, *args: Any, episode, **kwargs: Any
+    ):
+        episode_id = (episode.episode_id, episode.scene_id)
+        agent_state = self._sim.get_agent_state()
+        agent_position = agent_state.position
+        agent_rotation = agent_state.rotation
+
+        if self.current_episode_id != episode_id:
+            # A new episode has started
+            self.current_episode_id = episode_id
+            delta = np.array([0.0, 0.0, 0.0, 0.0])
+            self.start_position = copy.deepcopy(agent_position)
+            self.start_rotation = copy.deepcopy(agent_rotation)
+        else:
+            current_position = agent_position
+            current_rotation = agent_rotation
+            # For the purposes of this sensor, forward is X and rightward is Y.
+            # The heading is measured positively from X to Y.
+            curr_x, curr_y = -current_position[2], current_position[0]
+            curr_heading = compute_heading_from_quaternion(current_rotation)
+            prev_x, prev_y = -self.prev_position[2], self.prev_position[0]
+            prev_heading = compute_heading_from_quaternion(self.prev_rotation)
+            dr = math.sqrt((curr_x - prev_x) ** 2 + (curr_y - prev_y) ** 2)
+            dphi = math.atan2(curr_y - prev_y, curr_x - prev_x)
+            dhead = curr_heading - prev_heading
+            # Convert these to the starting point's coordinate system.
+            start_heading = compute_heading_from_quaternion(self.start_rotation)
+            dphi = dphi - start_heading
+            delta = np.array([dr, dphi, dhead, 0.0])
+        self.prev_position = copy.deepcopy(agent_position)
+        self.prev_rotation = copy.deepcopy(agent_rotation)
+
+        return delta
+
         
 @registry.register_measure
 class Picture(Measure):
@@ -1836,8 +2050,8 @@ class ExploredMap(Measure):
 
 
 @registry.register_measure
-class SmoothMapValue(Measure):
-    r"""Smooth Map Value measure"""
+class SmoothCoverage(Measure):
+    r"""Smooth Coverage measure"""
 
     def __init__(
         self, *args: Any, sim: Simulator, config: Config, **kwargs: Any
@@ -1848,25 +2062,30 @@ class SmoothMapValue(Measure):
         self._num_samples = config.NUM_TOPDOWN_MAP_SAMPLE_POINTS
         self._coordinate_min = maps.COORDINATE_MIN
         self._coordinate_max = maps.COORDINATE_MAX
-        self._top_down_map = None
+        self.top_down_map = None
+        self._coverage_map = None
         super().__init__()
+        """
         self.log_manager = LogManager()
         self.log_manager.setLogDirectory("./smooth_value")
         self.log_index = 0
+        """
 
     def _get_uuid(self, *args: Any, **kwargs: Any):
-        return "smooth_map_value"
+        return "smooth_coverage"
 
 
     def get_original_map(self):
-        top_down_map = maps.get_topdown_map(
+        self.top_down_map = maps.get_topdown_map(
             self._sim,
             self._map_resolution,
             self._num_samples,
-            False,
+            True,
         )
 
-        self._top_down_map = np.zeros(top_down_map.shape)
+        self._coverage_map = np.zeros_like(self.top_down_map)
+        if self._config.FOG_OF_WAR.DRAW:
+            self._fog_of_war_mask = np.zeros_like(self.top_down_map)
         #logger.info(f"########## TopDown Map Shape={self._top_down_map.shape}")
 
 
@@ -1886,6 +2105,9 @@ class SmoothMapValue(Measure):
             self._coordinate_max,
             self._map_resolution,
         )
+
+        self.update_fog_of_war_mask(np.array([a_x, a_y]))
+
         """
         self.log_writer = self.log_manager.createLogWriter(f"smooth_value_{self.log_index}")
         self.log_index += 1
@@ -1895,18 +2117,136 @@ class SmoothMapValue(Measure):
             self.log_writer.writeLine()
         """
 
+        result, seen_count = self.update_top_down_map()
+
+        """
+        seen_count = 1e-8
+        result = 0.0
+        for i in range(len(self._coverage_map)):
+            for j in range(len(self._coverage_map[0])):
+                if self._fog_of_war_mask[i,j] == 1:
+                    seen_count += 1 
+                    count = self._coverage_map[i,j]
+                    result += 1 / np.sqrt(count)
+        """
+
+        #logger.info(f"######### result = {result} ###########")
+        #logger.info(f"########## seen_count = {seen_count} ############")
+        self._metric = result / seen_count
+        #logger.info(f"####### smooth_reward={self._metric} #########")
+
+    def update_top_down_map(self):
+        seen_count = 1e-8
+        result = 0.0
+        for i in range(len(self._coverage_map)):
+            for j in range(len(self._coverage_map[0])):
+                if self._fog_of_war_mask[i,j] == 1:
+                    #logger.info(f"i={i}, j={j}")
+                    self._coverage_map[i,j] += 1
+
+                    seen_count += 1 
+                    count = self._coverage_map[i,j]
+                    result += 1 / np.sqrt(count)
+
+        return result, seen_count
+
+    def update_fog_of_war_mask(self, agent_position):
+        if self._config.FOG_OF_WAR.DRAW:
+            self._fog_of_war_mask = fog_of_war.reveal_fog_of_war(
+                self.top_down_map,
+                np.zeros_like(self.top_down_map),
+                agent_position,
+                self.get_polar_angle(),
+                fov=self._config.FOG_OF_WAR.FOV,
+                max_line_len=self._config.FOG_OF_WAR.VISIBILITY_DIST
+                * max(self._map_resolution)
+                / (self._coordinate_max - self._coordinate_min),
+            )
+
+    def get_polar_angle(self):
+        agent_state = self._sim.get_agent_state()
+        # quaternion is in x, y, z, w format
+        ref_rotation = agent_state.rotation
+
+        heading_vector = quaternion_rotate_vector(
+            ref_rotation.inverse(), np.array([0, 0, -1])
+        )
+
+        phi = cartesian_to_polar(-heading_vector[2], heading_vector[0])[1]
+        x_y_flip = -np.pi / 2
+        return np.array(phi) + x_y_flip
+
+@registry.register_measure
+class NoveltyValue(Measure):
+    r"""Novelty Value measure"""
+
+    def __init__(
+        self, *args: Any, sim: Simulator, config: Config, **kwargs: Any
+    ):
+        self._sim = sim
+        self._config = config
+        self._map_resolution = (config.MAP_RESOLUTION, config.MAP_RESOLUTION)
+        self._num_samples = config.NUM_TOPDOWN_MAP_SAMPLE_POINTS
+        self._coordinate_min = maps.COORDINATE_MIN
+        self._coordinate_max = maps.COORDINATE_MAX
+        self._top_down_map = None
+        super().__init__()
+        """
+        self.log_manager = LogManager()
+        self.log_manager.setLogDirectory("./novelty")
+        self.log_index = 0
+        """
+
+    def _get_uuid(self, *args: Any, **kwargs: Any):
+        return "novelty_value"
+
+    def get_original_map(self):
+        top_down_map = maps.get_topdown_map(
+            self._sim,
+            self._map_resolution,
+            self._num_samples,
+            False,
+        )
+
+        self._top_down_map = np.zeros(top_down_map.shape)
+
+    def reset_metric(self, *args: Any, episode, **kwargs: Any):
+        self._metric = None
+        self.get_original_map()
+            
+        self.update_metric(None, None)
+
+
+    def update_metric(self, episode, action, *args: Any, **kwargs: Any):
+        agent_position = self._sim.get_agent_state().position
+        a_x, a_y = maps.to_grid(
+            agent_position[0],
+            agent_position[2],
+            self._coordinate_min,
+            self._coordinate_max,
+            self._map_resolution,
+        )
+
         self._top_down_map[a_x, a_y] += 1
 
-        explored_map = self._top_down_map[self._top_down_map != 0]
+        """
+        self.log_writer = self.log_manager.createLogWriter(f"novelty_value_{self.log_index}")
+        self.log_index += 1
+        logger.info("Write Count Map")
+        for i in range(self._top_down_map.shape[0]):
+            for j in range(self._top_down_map.shape[1]):
+                self.log_writer.write(str(self._top_down_map[i][j]))
+            self.log_writer.writeLine()
+        """
+
+        visit_count = self._top_down_map[a_x, a_y]
+        #logger.info("###### visit_count = {visit_count}")
         
-        # 各要素の平方の逆数を計算
-        inverse_squares = 1 / np.square(explored_map)
+        # 平方の逆数を計算
+        novelty = 1 / np.sqrt(visit_count)
+        #logger.info("###### sqrt = {np.sqrt(visit_count)}")
     
-        # 逆数の合計を計算
-        result = np.sum(inverse_squares)
-        explored_size = explored_map.size
-        #logger.info(f"########## explored_size = {explored_size} ############")
-        self._metric = result / explored_size
+        self._metric = novelty
 
 
 @registry.register_measure
