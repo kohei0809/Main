@@ -1,8 +1,8 @@
 #!/bin/sh
 #$ -cwd
-#$ -l node_q=1
+#$ -l gpu_1=1
 #$ -j y
-#$ -l h_rt=01:00:00
+#$ -l h_rt=6:00:00
 #$ -o output/o.$JOB_ID
 #$ -p -4
 
@@ -21,15 +21,17 @@ conda activate habitat2
 #pip install -U accelerate
 #export PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python
 
-pip install accelerate==0.21.0
-pip install huggingface-hub==0.22.2
-pip install transformers==4.37.2
+#pip install accelerate==0.21.0
+#pip install huggingface-hub==0.22.2
+#pip install transformers==4.37.2
 
 #pip install transformers==4.45.2
 #pip install accelerate==0.26.0
 
 
-python test_llava/test_llava.py
+python speaker_policy.py
+#python make_hes_log.py
+#python test_llava/test_llava.py
 #python test_llava/test_llava2.py
 #python test_llava/test_llava_next.py
 #python human_metrics.py

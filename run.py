@@ -22,7 +22,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--run-type",
-        choices=["train", "train2", "train3", "train4", "train5", "eval", "eval2", "eval3", "eval4", "eval5", "random", "random2", "random3", "random4", "random5"],
+        choices=["train", "train2", "train3", "train4", "train5", "eval", "eval2", "eval3", "eval4", "eval5", "random", "random2", "random3", "random4", "random5", "collect"],
         default=None,
         help="run type of the experiment (train or eval)",
     )
@@ -120,21 +120,21 @@ def test(run_type: str, area_reward_type: str, opts=None):
 
     elif run_type in ["eval", "eval2", "eval3", "eval4", "eval5"]:
         logger.info(f"######## area_reward_type = {area_reward_type} ############")
-        datadate = "24-07-25 06-34-14"
+        #datadate = "24-07-25 06-34-14"
         #datadate = "24-08-11 21-55-35"
-        datadate = "24-10-05 21-07-23"
+        #datadate = "24-10-05 21-07-23"
         #datadate = "24-10-07 06-13-55"
-        datadate = "24-10-08 21-09-33"
+        #datadate = "24-10-08 21-09-33"
         datadate = "24-10-19 21-11-05"
-        datadate = "24-10-23 19-23-28"
+        #datadate = "24-10-23 19-23-28"
         #datadate = "24-10-23 00-52-02"
-        current_ckpt = 120
+        #current_ckpt = 120
         #current_ckpt = 165
-        current_ckpt = 155
+        #current_ckpt = 155
         #current_ckpt = 653
-        current_ckpt = 662
+        #current_ckpt = 662
         current_ckpt = 206
-        current_ckpt = 20
+        #current_ckpt = 20
         #current_ckpt = 2051
 
         config.defrost()
@@ -178,14 +178,32 @@ def test(run_type: str, area_reward_type: str, opts=None):
         config.RL.PPO.num_mini_batch = 4
         config.NUM_PROCESSES = 28
         #config.NUM_PROCESSES = 8
-        #config.RL.PPO.num_mini_batch = 1
-        #config.NUM_PROCESSES = 1
+        config.RL.PPO.num_mini_batch = 1
+        config.NUM_PROCESSES = 1
         config.TEST_EPISODE_COUNT = 220
+        config.TEST_EPISODE_COUNT = 110
+        config.TEST_EPISODE_COUNT = 1
+        config.VIDEO_OPTION = ["disk"]
+        config.TORCH_GPU_ID = 0
+        config.TASK_CONFIG.DATASET.DATA_PATH: "data/datasets/maximuminfo/v4/{split}/{split}.json.gz"
+        config.TASK_CONFIG.AREA_REWARD = area_reward_type
+        config.freeze()
+
+    elif run_type in ["collect"]:
+        datadate = "24-10-19 21-11-05"
+        current_ckpt = 206
+
+        config.defrost()
+        config.TASK_CONFIG.DATASET.SPLIT = "val"
+        config.RL.PPO.num_mini_batch = 1
+        config.NUM_PROCESSES = 1
+        #config.TEST_EPISODE_COUNT = 220
         config.TEST_EPISODE_COUNT = 110
         config.VIDEO_OPTION = ["disk"]
         config.TORCH_GPU_ID = 0
         config.TASK_CONFIG.DATASET.DATA_PATH: "data/datasets/maximuminfo/v4/{split}/{split}.json.gz"
         config.TASK_CONFIG.AREA_REWARD = area_reward_type
+        config.TASK_CONFIG.TASK.MEASUREMENTS.append('CI')
         config.freeze()
     
     random.seed(config.TASK_CONFIG.SEED)
@@ -259,6 +277,8 @@ def test(run_type: str, area_reward_type: str, opts=None):
         
         elif run_type in ["random", "random2", "random3", "random4"]:
             trainer.random_eval(log_manager, start_date)
+        elif run_type in ["collect"]:
+            trainer.collect_images(current_ckpt)
     finally:
         end_date = datetime.datetime.now().strftime('%y-%m-%d %H-%M-%S') 
         print("Start at " + start_date)

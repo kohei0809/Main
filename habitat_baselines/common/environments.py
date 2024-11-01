@@ -203,6 +203,9 @@ class InfoRLEnv(RLEnv):
         info = self.get_info(observations)
         measure = self._env.get_metrics()[self._picture_measure_name]
         picture_value = measure
+        obs_num = 0.0
+        if "ci" in info:
+            obs_num = info["ci"]
         # area報酬のみ
         if self._core_env_config.AREA_REWARD in self.area_type:
             reward = 0
@@ -235,7 +238,7 @@ class InfoRLEnv(RLEnv):
             #logger.info(f"area_rate_inc={area_rate_inc}")
             self._previous_area_rate = current_area
 
-            return reward, area_rate_inc, picture_value, 0.0, self._take_picture(), self._scene_data, -1, -1
+            return reward, area_rate_inc, picture_value, 0.0, obs_num, self._take_picture(), self._scene_data, -1, -1
 
         # area報酬以外も与える
         else:
@@ -269,7 +272,7 @@ class InfoRLEnv(RLEnv):
 
             agent_position = self._env._sim.get_agent_state().position
 
-            return reward, area_reward, picture_value, output, self._take_picture(), self._scene_data, agent_position[0], agent_position[2]
+            return reward, area_reward, picture_value, output, obs_num, self._take_picture(), self._scene_data, agent_position[0], agent_position[2]
     
     def get_polar_angle(self):
         agent_state = self._env._sim.get_agent_state()

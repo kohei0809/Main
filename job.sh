@@ -2,7 +2,7 @@
 #$ -cwd
 #$ -l node_f=1
 #$ -j y
-#$ -l h_rt=24:00:00
+#$ -l h_rt=01:00:00
 #$ -o output/o.$JOB_ID
 #$ -p -4
 
@@ -23,7 +23,7 @@ conda activate habitat2
 
 #CUDA_LAUNCH_BLOCKING=1 python run.py --run-type train5 --area-reward-type coverage
 #CUDA_LAUNCH_BLOCKING=1 python run.py --run-type train5 --area-reward-type novelty
-CUDA_LAUNCH_BLOCKING=1 python run.py --run-type train5 --area-reward-type smooth-coverage
+#CUDA_LAUNCH_BLOCKING=1 python run.py --run-type train5 --area-reward-type smooth-coverage
 #CUDA_LAUNCH_BLOCKING=1 python run.py --run-type train5 --area-reward-type curiosity
 #CUDA_LAUNCH_BLOCKING=1 python run.py --run-type train5 --area-reward-type reconstruction
 #CUDA_LAUNCH_BLOCKING=1 python run.py --run-type train3
@@ -31,3 +31,5 @@ CUDA_LAUNCH_BLOCKING=1 python run.py --run-type train5 --area-reward-type smooth
 #CUDA_LAUNCH_BLOCKING=1 python run.py --run-type train --area-reward-type coverage
 #python run.py --run-type eval2
 #python research_picture_value.py
+
+#CUDA_LAUNCH_BLOCKING=1 python run.py --run-type collect --area-reward-type coverage

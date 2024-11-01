@@ -2,7 +2,7 @@
 #$ -cwd
 #$ -l node_f=1
 #$ -j y
-#$ -l h_rt=10:00:00
+#$ -l h_rt=1:00:00
 #$ -o output/o.$JOB_ID
 #$ -p -4
 

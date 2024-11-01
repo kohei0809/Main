@@ -1,6 +1,6 @@
 #!/bin/sh
 #$ -cwd
-#$ -l node_f=1
+#$ -l node_q=1
 #$ -j y
 #$ -l h_rt=10:00:00
 #$ -o output/o.$JOB_ID

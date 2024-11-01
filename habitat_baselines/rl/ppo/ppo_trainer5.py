@@ -25,6 +25,7 @@ from torch.optim.lr_scheduler import LambdaLR
 import torch.optim as optim
 import torch.nn.functional as F
 from functools import lru_cache
+from scipy.optimize import linear_sum_assignment
 
 import clip
 from sentence_transformers import SentenceTransformer, util
@@ -1141,7 +1142,7 @@ class PPOTrainerO5(BaseRLTrainerOracle):
 
         #logger.info("########### output_text ################")
         #logger.info(response)
-        return response
+        return response, image_descriptions
 
     def generate_response(self, image, input_text):
         if 'llama-2' in self.llava_model_name.lower():
@@ -1364,6 +1365,114 @@ class PPOTrainerO5(BaseRLTrainerOracle):
 
         return outputs 
 
+    def get_txt2dict(self, txt_path):
+        data_dict = {}
+        # ファイルを読み込み、行ごとにリストに格納
+        with open(txt_path, 'r') as file:
+            lines = file.readlines()
+
+        # 奇数行目をキー、偶数行目を値として辞書に格納
+        for i in range(0, len(lines), 2):
+            scene_name = lines[i].strip()  # 奇数行目: scene名
+            scene_data = lines[i + 1].strip().split(',')  # 偶数行目: コンマ区切りのデータ
+            data_dict[scene_name] = scene_data
+            
+        return data_dict
+
+        # sentence内の名詞のリストを取得
+    def extract_nouns(self, sentence):
+        tokens = word_tokenize(sentence)
+        nouns = []
+
+        for word in tokens:
+            if word.isalpha() and word not in stopwords.words('english'):
+                # 原型に変換
+                lemma = self.lemmatizer.lemmatize(word)
+                pos = self.get_wordnet_pos(word)
+                if pos == wordnet.NOUN and self.is_valid_noun(lemma):  # 名詞に限定
+                    if lemma not in nouns:
+                        nouns.append(lemma)
+
+        return nouns
+
+    # 名詞であるかどうかを判断するための追加のフィルター
+    def is_valid_noun(self, word):
+        """単語が名詞であるかを確認する追加のフィルター"""
+        # 除外したい名詞のリスト
+        excluded_nouns = {"inside", "lead", "use", "look", "like", "lot", "clean", "middle", "walk", "gray"}
+
+        if word in excluded_nouns:
+            return False
+        synsets = wordnet.synsets(word)
+        return any(s.pos() == 'n' for s in synsets)
+
+    def calculate_clip_score(self, image, text):
+        # 画像の読み込み
+        image = Image.fromarray(image)
+        
+        # 画像の前処理
+        inputs = self.preprocess(image).unsqueeze(0).to(self.device)
+
+        # テキストのトークン化とエンコード
+        text_tokens = clip.tokenize([text]).to(self.device)
+
+        # 画像とテキストの特徴ベクトルを計算
+        with torch.no_grad():
+            image_features = self.clip_model.encode_image(inputs)
+            text_features = self.clip_model.encode_text(text_tokens)
+
+        # 類似度（cosine similarity）を計算
+        clip_score = torch.cosine_similarity(image_features, text_features)
+        
+        return clip_score.item()
+
+    def calculate_iou(self, word1, word2):
+        # word1, word2 の同義語集合を取得し、それらのJaccard係数を用いてIoU計算を行います。
+        synsets1 = set(wordnet.synsets(word1))
+        synsets2 = set(wordnet.synsets(word2))
+        intersection = synsets1.intersection(synsets2)
+        union = synsets1.union(synsets2)
+        if not union:  # 同義語が全くない場合は0を返す
+            return 0.0
+        return len(intersection) / len(union)
+
+    # IoU行列の生成
+    def generate_iou_matrix(self, object_list1, object_list2):
+        iou_matrix = np.zeros((len(object_list1), len(object_list2)))
+        for i, obj1 in enumerate(object_list1):
+            for j, obj2 in enumerate(object_list2):
+                iou_matrix[i, j] = self.calculate_iou(obj1, obj2)
+        return iou_matrix
+
+    # Jonker-Volgenantアルゴリズム（線形代入問題の解法）で最適な対応を見つける
+    def find_optimal_assignment(self, object_list1, object_list2):
+        iou_matrix = self.generate_iou_matrix(object_list1, object_list2)
+        # コスト行列はIoUの負の値を使う（最小コストの最大化）
+        cost_matrix = -iou_matrix
+        row_ind, col_ind = linear_sum_assignment(cost_matrix)
+        optimal_iou = iou_matrix[row_ind, col_ind].sum() / min(len(object_list1), len(object_list2))
+        return optimal_iou, list(zip(row_ind, col_ind))
+
+    def calculate_ed(self, object_list, pred_sentence, area, picture_list, image_descriptions):
+        #CLIP Scoreの平均の計算
+        clip_score_list = []
+        for i in range(len(picture_list)):
+            pic_list = picture_list[i]
+            clip_score_list.append(self.calculate_clip_score(pic_list[1], image_descriptions[i]))
+
+        pred_object_list = self.extract_nouns(pred_sentence)
+
+        if len(pred_object_list) == 0:
+            logger.info(f"len(pred_object_list)=0")
+            return 0.0
+            
+        optimal_iou, assignment = self.find_optimal_assignment(object_list, pred_object_list)
+
+        ed_score = clip_score * optimal_iou * area
+        #logger.info(f"ED-S: {ed_score}, CLIP Score: {clip_score}, IoU: {optimal_iou}, Area: {area}")
+
+        return ed_score
+
     def _eval_checkpoint(self, checkpoint_path: str, log_manager: LogManager, date: str, checkpoint_index: int = 0) -> None:
         logger.info("############### EAVL5 ##################")
         self.log_manager = log_manager
@@ -1465,6 +1574,8 @@ class PPOTrainerO5(BaseRLTrainerOracle):
                     descriptions.append(lines[desc_ind+j].strip())
                 self.description_dict[scene_id] = descriptions
         
+        self.scene_object_dict = self.get_txt2dict("/gs/fs/tga-aklab/matsumoto/Main/scene_object_list.txt")
+
         observations = self.envs.reset()
         batch = batch_obs(observations, device=self.device)
 
@@ -1479,6 +1590,7 @@ class PPOTrainerO5(BaseRLTrainerOracle):
         current_episode_meteor_score = torch.zeros(self.envs.num_envs, 1, device=self.device)
         current_episode_pas_score = torch.zeros(self.envs.num_envs, 1, device=self.device)
         current_episode_hes_score = torch.zeros(self.envs.num_envs, 1, device=self.device)
+        current_episode_ed_score = torch.zeros(self.envs.num_envs, 1, device=self.device)
         
         test_recurrent_hidden_states = torch.zeros(
             self.actor_critic.net.num_recurrent_layers,
@@ -1539,6 +1651,7 @@ class PPOTrainerO5(BaseRLTrainerOracle):
             )
             
             reward = []
+            pic_val = []
             similarity = []
             area_rate = [] # 探索済みのエリア()
             bleu_score = []
@@ -1548,7 +1661,8 @@ class PPOTrainerO5(BaseRLTrainerOracle):
             meteor_score = []
             pas_score = []
             hes_score = []
-            pic_val = []
+            ed_score = []
+
             n_envs = self.envs.num_envs
             for n in range(n_envs):
                 reward.append(rewards[n][0])
@@ -1562,6 +1676,7 @@ class PPOTrainerO5(BaseRLTrainerOracle):
                 meteor_score.append(0)
                 pas_score.append(0)
                 hes_score.append(0)
+                ed_score.append(0)
                 
             for n in range(len(observations)):
                 self._taken_picture_list[n].append([pic_val[n], observations[n]["rgb"]])
@@ -1576,6 +1691,7 @@ class PPOTrainerO5(BaseRLTrainerOracle):
             meteor_score = torch.tensor(meteor_score, dtype=torch.float, device=self.device).unsqueeze(1)
             pas_score = torch.tensor(pas_score, dtype=torch.float, device=self.device).unsqueeze(1)
             hes_score = torch.tensor(hes_score, dtype=torch.float, device=self.device).unsqueeze(1)
+            ed_score = torch.tensor(ed_score, dtype=torch.float, device=self.device).unsqueeze(1)
             
             current_episode_reward += reward
             current_episode_area_rate += area_rate
@@ -1610,7 +1726,7 @@ class PPOTrainerO5(BaseRLTrainerOracle):
                     pred_description = ""
                     if results_image is not None:
                         #pred_description = self.create_description_from_results_image(results_image, positions_x, positions_y)
-                        pred_description = self.create_description_sometimes(image_list, results_image)
+                        pred_description, image_descriptions = self.create_description_sometimes(image_list, results_image)
                         #pred_description = self.create_description_multi(image_list, results_image)
 
                     s_lemmatized = self.lemmatize_and_filter(pred_description)                        
@@ -1648,7 +1764,12 @@ class PPOTrainerO5(BaseRLTrainerOracle):
                     pas_score[n] = sum(pas_list) / len(pas_list)    
                     hes_score[n] = self.eval_model(hes_sentence_list).item()
 
-                    # average of picture value par 1 picture
+                    # ED-Sの計算
+                    scene_name = current_episodes[n].scene_id[-15:-4]
+                    area = current_episode_exp_area[n].item()
+                    object_list = self.scene_object_dict[scene_name]
+                    ed_score[n] = self.calculate_ed(object_list, pred_description, area, self._taken_picture_list[n], image_descriptions)
+
                     current_episode_similarity[n] += similarity[n]
                     current_episode_bleu_score[n] += bleu_score[n]
                     current_episode_rouge_1_score[n] += rouge_1_score[n]
@@ -1657,6 +1778,7 @@ class PPOTrainerO5(BaseRLTrainerOracle):
                     current_episode_meteor_score[n] += meteor_score[n]
                     current_episode_pas_score[n] += pas_score[n]
                     current_episode_hes_score[n] += hes_score[n]
+                    current_episode_ed_score[n] += ed_score[n]
                     
                     # save description
                     out_path = os.path.join("log/" + date + "/eval5/description.txt")
@@ -1680,6 +1802,7 @@ class PPOTrainerO5(BaseRLTrainerOracle):
                     episode_stats["meteor_score"] = current_episode_meteor_score[n].item()
                     episode_stats["pas_score"] = current_episode_pas_score[n].item()
                     episode_stats["hes_score"] = current_episode_hes_score[n].item()
+                    episode_stats["ed_score"] = current_episode_ed_score[n].item()
                     
                     episode_stats.update(
                         self._extract_scalars_from_info(infos[n])
@@ -1694,6 +1817,7 @@ class PPOTrainerO5(BaseRLTrainerOracle):
                     current_episode_meteor_score[n] = 0
                     current_episode_pas_score[n] = 0
                     current_episode_hes_score[n] = 0
+                    current_episode_ed_score[n] = 0
 
                     stats_episodes[
                         (
@@ -1772,7 +1896,8 @@ class PPOTrainerO5(BaseRLTrainerOracle):
         logger.info("HES Score: " + str(metrics["hes_score"]))
         logger.info("Similarity: " + str(metrics["similarity"]))
         logger.info("PAS Score: " + str(metrics["pas_score"]))
+        logger.info("ED Score: " + str(metrics["ed_score"]))
         logger.info("BLUE: " + str(metrics["bleu_score"]) + ", ROUGE-1: " + str(metrics["rouge_1_score"]) + ", ROUGE-2: " + str(metrics["rouge_2_score"]) + ", ROUGE-L: " + str(metrics["rouge_L_score"]) + ", METEOR: " + str(metrics["meteor_score"]))
-        eval_metrics_logger.writeLine(str(step_id)+","+str(metrics["area_rate"])+","+str(metrics["similarity"])+","+str(metrics["bleu_score"])+","+str(metrics["rouge_1_score"])+","+str(metrics["rouge_2_score"])+","+str(metrics["rouge_L_score"])+","+str(metrics["meteor_score"])+","+str(metrics["pas_score"])+","+str(metrics["hes_score"])+","+str(metrics["raw_metrics.agent_path_length"]))
+        eval_metrics_logger.writeLine(str(step_id)+","+str(metrics["exp_area"])+","+str(metrics["similarity"])+","+str(metrics["picture_value"])+","+str(metrics["pic_sim"])+","+str(metrics["bleu_score"])+","+str(metrics["rouge_1_score"])+","+str(metrics["rouge_2_score"])+","+str(metrics["rouge_L_score"])+","+str(metrics["meteor_score"])+","+str(metrics["pas_score"])+","+str(metrics["hes_score"])+","+str(metrics["ed_score"])+","+str(metrics["raw_metrics.agent_path_length"]))
 
         self.envs.close()

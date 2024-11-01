@@ -799,6 +799,7 @@ class Saliency(Measure):
 
 @registry.register_measure
 class CI(Measure):
+    # observationの10%以上を占めるオブジェクトの数
     cls_uuid: str = "ci"
 
     def __init__(
@@ -838,15 +839,9 @@ class CI(Measure):
         W = semantic_obs.shape[1]
         self._matrics = np.zeros((H, W))
         """
-        #take_picture=True
-        if take_picture:
-            #measure = self._calCI()
-            #self._metric = measure
-            self._metric = -1
-        else:
-            #self._metric = measure
-            #self._metric = 0 
-            self._metric = -1
+
+        self._metric = self._calCI()
+
 
     def print_scene_recur(self, scene, limit_output=10):
         count = 0
@@ -889,18 +884,19 @@ class CI(Measure):
         W = semantic_obs.shape[1]
 
         #objectのcategoryリスト
-        category = []
-    
-        ci = 0.0
+        category_num = [0] * 40
         for i in range(H):
             for j in range(W):
                 obs = semantic_obs[i][j]
-                if obs not in category:
-                    category.append(obs)
-        
-        #ci *= max(len(category), 1.0)
-        ci = max(len(category), 1.0)
-        return ci
+                category_num[obs] += 1
+
+        obs_shape = H*W
+        num_category = 0
+        for i in range(40):
+            if category_num[i] > obs_shape*0.1:
+                num_category += 1
+
+        return num_category
         
 
 @registry.register_measure
