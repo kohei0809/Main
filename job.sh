@@ -28,7 +28,7 @@ conda activate habitat2
 #CUDA_LAUNCH_BLOCKING=1 python run.py --run-type train5 --area-reward-type reconstruction
 #CUDA_LAUNCH_BLOCKING=1 python run.py --run-type train3
 #CUDA_LAUNCH_BLOCKING=1 python run.py --run-type train2
-#CUDA_LAUNCH_BLOCKING=1 python run.py --run-type train --area-reward-type coverage
+CUDA_LAUNCH_BLOCKING=1 python run.py --run-type train --area-reward-type coverage
 #python run.py --run-type eval2
 #python research_picture_value.py
 

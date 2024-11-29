@@ -2,8 +2,9 @@
 #$ -cwd
 #$ -l node_f=1
 #$ -j y
-#$ -l h_rt=7:00:00
+#$ -l h_rt=2:00:00
 #$ -o output/o.$JOB_ID
+#$ -p -4
 
 . /etc/profile.d/modules.sh
 

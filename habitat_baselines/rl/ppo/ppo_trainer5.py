@@ -4,7 +4,7 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-# 探索のみの報酬
+# 探索のみの報酬(既存研究)
 
 import os
 import time
@@ -1278,8 +1278,14 @@ class PPOTrainerO5(BaseRLTrainerOracle):
         return f_score
 
     def get_explored_picture(self, infos):
-        explored_map = infos["map"]
+        explored_map = infos["map"].copy()
         fog_of_war_map = infos["fog_of_war_mask"]
+
+        explored_map[(fog_of_war_map == 1) & (explored_map == maps.MAP_VALID_POINT)] = maps.MAP_INVALID_POINT
+        explored_map[(fog_of_war_map == 0) & ((explored_map == maps.MAP_VALID_POINT) | (explored_map == maps.MAP_INVALID_POINT))] = maps.MAP_BORDER_INDICATOR
+
+        
+        """
         y, x = explored_map.shape
 
         for i in range(y):
@@ -1289,8 +1295,9 @@ class PPOTrainerO5(BaseRLTrainerOracle):
                         explored_map[i][j] = maps.MAP_INVALID_POINT
                 else:
                     if explored_map[i][j] in [maps.MAP_VALID_POINT, maps.MAP_INVALID_POINT]:
-                        explored_map[i][j] = maps.MAP_BORDER_INDICATOR
-            
+                        explored_map[i][j] = maps.MAP_BORDER_INDICATOR 
+        """
+
         return explored_map, fog_of_war_map
 
     def extract_after_inst(self, S: str) -> str:
@@ -1562,6 +1569,9 @@ class PPOTrainerO5(BaseRLTrainerOracle):
         
         # ファイルを読み込んで行ごとにリストに格納する
         with open('data/scene_datasets/mp3d/Environment_Descriptions.txt', 'r') as file:
+            lines = [line.strip() for line in file]
+            
+            """
             lines = file.readlines()
 
             # scene id と文章を抽出してデータフレームに変換する
@@ -1573,6 +1583,13 @@ class PPOTrainerO5(BaseRLTrainerOracle):
                 for j in range(5):
                     descriptions.append(lines[desc_ind+j].strip())
                 self.description_dict[scene_id] = descriptions
+            """
+        
+        # scene id と文章を辞書に変換
+        self.description_dict = {
+            lines[i]: lines[i+2:i+7]
+            for i in range(0, len(lines), 7)
+        }
         
         self.scene_object_dict = self.get_txt2dict("/gs/fs/tga-aklab/matsumoto/Main/scene_object_list.txt")
 
@@ -1678,9 +1695,8 @@ class PPOTrainerO5(BaseRLTrainerOracle):
                 hes_score.append(0)
                 ed_score.append(0)
                 
-            for n in range(len(observations)):
-                self._taken_picture_list[n].append([pic_val[n], observations[n]["rgb"]])
-                
+                self._taken_picture_list[n].append([rewards[n][2], observations[n]["rgb"], rewards[n][6], rewards[n][7], infos[n]["explored_map"]])
+                    
             reward = torch.tensor(reward, dtype=torch.float, device=self.device).unsqueeze(1)
             area_rate = torch.tensor(area_rate, dtype=torch.float, device=self.device).unsqueeze(1)
             similarity = torch.tensor(similarity, dtype=torch.float, device=self.device).unsqueeze(1)

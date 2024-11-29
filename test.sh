@@ -2,7 +2,7 @@
 #$ -cwd
 #$ -l gpu_1=1
 #$ -j y
-#$ -l h_rt=6:00:00
+#$ -l h_rt=00:15:00
 #$ -o output/o.$JOB_ID
 #$ -p -4
 
@@ -29,7 +29,8 @@ conda activate habitat2
 #pip install accelerate==0.26.0
 
 
-python speaker_policy.py
+#python speaker_policy.py
+python search_similar_description.py
 #python make_hes_log.py
 #python test_llava/test_llava.py
 #python test_llava/test_llava2.py

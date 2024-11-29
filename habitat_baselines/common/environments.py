@@ -139,7 +139,21 @@ class InfoRLEnv(RLEnv):
         observations = super().reset()
         self._previous_area_reward = 0.0
         self._previous_area_rate = 0.0
+
+        # 一度にデータをリストに追加し、最後にデータフレームを作成
+        scene_data = []
+        semantic_scene = self._env._sim._sim.semantic_scene
+
+        for level in semantic_scene.levels:
+            for region in level.regions:
+                for obj in region.objects:
+                    # オブジェクトデータをリストに追加
+                    scene_data.append({'object_name': obj.category.name(), 'id': int(obj.id.split('_')[-1])})
         
+        # データフレームに一度に変換
+        self._scene_data = pd.DataFrame(scene_data)
+                
+        """
         self._scene_data = pd.DataFrame(columns=['object_name', 'id'])
         semantic_scene = self._env._sim._sim.semantic_scene
         for level in semantic_scene.levels:
@@ -147,7 +161,8 @@ class InfoRLEnv(RLEnv):
                 for obj in region.objects:
                     new_row = pd.DataFrame({'object_name': [obj.category.name()], 'id': [int(obj.id.split('_')[-1])]})
                     self._scene_data = pd.concat([self._scene_data, new_row], ignore_index=True)
-        
+        """
+
         return observations
 
     def step(self, *args, **kwargs):
@@ -165,6 +180,12 @@ class InfoRLEnv(RLEnv):
         
     # 観測済みのマップを作成
     def _cal_explored_rate(self, top_down_map, fog_of_war_map):
+        top_down_map = np.array(top_down_map)
+        fog_of_war_map = np.array(fog_of_war_map)
+        num = np.count_nonzero(top_down_map != 0)
+        num_exp = np.count_nonzero((top_down_map != 0) & (fog_of_war_map == 1))
+        
+        """
         num = 0.0 # 探索可能範囲のグリッド数
         num_exp = 0.0 # 探索済みの範囲のグリッド数
         rate = 0.0
@@ -178,6 +199,7 @@ class InfoRLEnv(RLEnv):
                         num_exp += 1
                     
                     num += 1
+        """
                     
         if num == 0:
             rate = 0.0
@@ -188,13 +210,18 @@ class InfoRLEnv(RLEnv):
 
     # 観測済みエリアの数を作成
     def _cal_coverage_num(self, top_down_map, fog_of_war_map):
+        top_down_map = np.array(top_down_map)
+        fog_of_war_map = np.array(fog_of_war_map)
+        coverage_num = np.count_nonzero((top_down_map != 0) & (fog_of_war_map == 1))
+        
+        """
         coverage_num = 0
-
         for i in range(len(top_down_map)):
             for j in range(len(top_down_map[0])):
                 # 探索可能範囲
                 if (top_down_map[i][j] != 0) and (fog_of_war_map[i][j] == 1):
                     coverage_num += 1
+        """
 
         return coverage_num
 

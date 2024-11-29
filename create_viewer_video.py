@@ -111,6 +111,7 @@ def create_video(scene_name, action_file):
     logger.info(config)
 
     action_list = read_file_into_list(action_file)
+    logger.info(f"actionlist: {action_list}")
     
     #フォルダがない場合は、作成
     os.makedirs(f"viewer_video/videos/{scene_name}", exist_ok=True)    
@@ -180,11 +181,11 @@ def save_frames(dir_name, frames):
                 
 if __name__ == '__main__':
     logger.info("START PROGRAM")
-    scene_name = "zsNo4HB9uLZ"
+    scene_name = "1pXnuDYAj8r"
     initial_position = (-14.56984, 0.15195204, -1.1711477)
     # 1, 2, 3, 0
     initial_rotation = (0, 7.06150603946298e-05, 0, 1)
-    file_name = "24-07-17_18-24-39"
+    file_name = "24-07-08_15-39-26"
     #file_name = "test"
     action_file = f"/gs/fs/tga-aklab/matsumoto/Main/viewer_video/action_log/{scene_name}/{file_name}.txt"
     #make_dataset(scene_name, initial_position, initial_rotation)

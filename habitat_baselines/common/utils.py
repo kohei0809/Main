@@ -62,6 +62,21 @@ class CategoricalNet(nn.Module):
         # 0行目が全てnanであるかを判定
         is_nan_row = torch.isnan(x).all(dim=1)
 
+        # NaN行がある場合のみ処理
+        if is_nan_row.any():
+            # NaNではない行の値
+            non_nan_rows = x[~is_nan_row]
+
+            # 非NaN行がない場合はランダム値で補完
+            if len(non_nan_rows) == 0:
+                random_values = torch.tensor([[random.random() for _ in range(x.size(1))]], dtype=x.dtype, device=x.device)
+                x[is_nan_row] = random_values
+            else:
+                # 最初の非NaN行でNaN行を一括補完
+                x[is_nan_row] = non_nan_rows[0]
+        
+
+        """
         # 0行目が全てnanである場合、他の行をコピーした値にする
         for i in range(x.size(0)):
             if is_nan_row[i]:
@@ -75,6 +90,7 @@ class CategoricalNet(nn.Module):
                     x[i] = y
                 else:
                     x[i] = y[0]
+        """
 
         return CustomFixedCategorical(logits=x)
 

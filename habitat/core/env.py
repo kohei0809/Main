@@ -326,19 +326,6 @@ class Env:
         res[0:(right_x-left_x), 0:(right_y-left_y), :] = patch[left_x:right_x, left_y:right_y, :]
         
         return res
-        
-           
-    def resize_semMap(self, patch, old_size, new_size):
-        rate = int(new_size / old_size)
-        new_semMap = np.zeros((new_size, new_size, 3))
-        
-        for i in range(old_size):
-            for j in range(old_size):
-                for k in range(3):
-                    value = patch[i, j, k]
-                    new_semMap[rate*i:rate*(i+1), rate*j:rate*(j+1), k] = value
-
-        return new_semMap
 
     def _update_step_stats(self) -> None:
         self._elapsed_steps += 1

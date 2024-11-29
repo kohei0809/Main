@@ -143,11 +143,12 @@ def test(run_type: str, area_reward_type: str, opts=None):
         #config.RL.PPO.num_mini_batch = 1
         #config.NUM_PROCESSES = 1
         #config.TEST_EPISODE_COUNT = 220
-        config.TEST_EPISODE_COUNT = 110
+        config.TEST_EPISODE_COUNT = 1100
         config.VIDEO_OPTION = ["disk"]
         #config.VIDEO_OPTION = []
         config.TORCH_GPU_ID = 0
-        config.TASK_CONFIG.DATASET.DATA_PATH: "data/datasets/maximuminfo/v4/{split}/{split}.json.gz"
+        #config.TASK_CONFIG.DATASET.DATA_PATH: "data/datasets/maximuminfo/v4/{split}/{split}.json.gz"
+        #config.TASK_CONFIG.DATASET.DATA_PATH: "data/datasets/maximuminfo/v4/test/test.json.gz"
         config.TASK_CONFIG.AREA_REWARD = area_reward_type
         config.freeze()
 
@@ -210,7 +211,8 @@ def test(run_type: str, area_reward_type: str, opts=None):
     np.random.seed(config.TASK_CONFIG.SEED)
     
     config.defrost()
-    #config.TASK_CONFIG.DATASET.DATA_PATH = "data/datasets/maximuminfo/v3/{split}/{split}.json.gz"
+    config.TASK_CONFIG.DATASET.SPLIT = "train"
+    config.EVAL.SPLIT = "train"
     config.TRAINER_NAME = agent_type
     config.TASK_CONFIG.TRAINER_NAME = agent_type
     config.CHECKPOINT_FOLDER = "cpt/" + start_date
@@ -239,8 +241,6 @@ def test(run_type: str, area_reward_type: str, opts=None):
         config.TASK_CONFIG.SIMULATOR.DEPTH_SENSOR.MIN_DEPTH = 0.5
         config.TASK_CONFIG.SIMULATOR.DEPTH_SENSOR.MAX_DEPTH = 5.0
         config.TASK_CONFIG.SIMULATOR.AGENT_0.HEIGHT = 1.5
-        if agent_type == "oracle-ego":
-            config.TASK_CONFIG.TASK.MEASUREMENTS.append('FOW_MAP')
         config.freeze()
     else:
         trainer_init = baseline_registry.get_trainer("non-oracle")

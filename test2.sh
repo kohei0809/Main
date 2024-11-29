@@ -1,8 +1,8 @@
 #!/bin/sh
 #$ -cwd
-#$ -l gpu_1=1
+#$ -l node_f=1
 #$ -j y
-#$ -l h_rt=00:10:00
+#$ -l h_rt=00:30:00
 #$ -o output/o.$JOB_ID
 #$ -p -4
 
@@ -29,7 +29,7 @@ conda activate habitat2
 #pip install accelerate==0.26.0
 
 
-python speaker_policy.py
+python create_viewer_video.py
 #python make_hes_log.py
 #python test_llava/test_llava.py
 #python test_llava/test_llava2.py

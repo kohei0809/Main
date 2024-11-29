@@ -181,7 +181,7 @@ def select_by_object(picture_list, object_threshold):
     return results
 
 def select_by_activation(picture_list, activation_threshold, i):
-    logger.info("Activation")
+    #logger.info("Activation")
     results = []
     #logger.info(clip_model)
     data = []
@@ -450,7 +450,7 @@ if __name__ == "__main__":
     selection_method = "Depth"
     #selection_method = "Object"
     #selection_method = "Always"
-    #selection_method = "Activation"
+    selection_method = "Activation"
     logger.info(f"Selection: {selection_method}")
 
     similarity_list = []
@@ -458,7 +458,7 @@ if __name__ == "__main__":
     pas_list = []
     ed_list = []
     loq_list = []
-    for i in range(85, 111):
+    for i in range(110, 111):
         dir_name = f"/gs/fs/tga-aklab/matsumoto/Main/collected_images/{i}/"
         picture_list, scene_name = load_images_and_extract_metadata(dir_name)
         #logger.info(f"picture_list = {len(picture_list)}")
@@ -471,7 +471,7 @@ if __name__ == "__main__":
             selected_list = select_pictures(picture_list)
             logger.info(f"selected_list = {len(selected_list)}")
         elif selection_method == "Depth":
-            depth_threshold = 3.5
+            depth_threshold = 3.6
             logger.info(f"Depth >= {depth_threshold}")
             selected_list = select_by_depth(picture_list, depth_threshold)
             logger.info(f"selected_list = {len(selected_list)}")
@@ -485,7 +485,7 @@ if __name__ == "__main__":
             selected_list = picture_list
             logger.info(f"selected_list = {len(selected_list)}")
         elif selection_method == "Activation":
-            Activation_threshold = 0.0
+            Activation_threshold = -0.07
             logger.info(f"Activation >= {Activation_threshold}")
             selected_list = select_by_activation(picture_list, Activation_threshold, i)
             logger.info(f"selected_list = {len(selected_list)}")

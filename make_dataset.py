@@ -23,8 +23,8 @@ from habitat.core.logging import logger
    
 if __name__ == '__main__':
     save_train = False
-    save_val = True
-    save_test = False
+    save_val = False
+    save_test = True
     
     exp_config = "./habitat_baselines/config/maximuminfo/ppo_maximuminfo.yaml"
     opts = None

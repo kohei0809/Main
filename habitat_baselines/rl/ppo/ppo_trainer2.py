@@ -226,7 +226,19 @@ class PPOTrainerO2(BaseRLTrainerOracle):
     def _calculate_pic_sim(self, picture_list):
         if len(picture_list) <= 1:
             return 0.0
+
+        # すべての画像埋め込みを一度に計算してリストに格納
+        embeddings = [self._create_new_image_embedding(picture[1]) for picture in picture_list]
+        # すべての埋め込み間のコサイン類似度を計算
+        sim_matrix = util.pytorch_cos_sim(torch.stack(embeddings), torch.stack(embeddings)).cpu().numpy()
+        # 対角要素（自己類似度）をゼロに
+        np.fill_diagonal(sim_matrix, 0)
+
+        # 類似度の合計を計算
+        total_sim = np.sum(sim_matrix) / (len(picture_list) * (len(picture_list) - 1))
+        
             
+        """
         sim_list = [[-10 for _ in range(len(picture_list))] for _ in range(len(picture_list))]
 
         for i in range(len(picture_list)):
@@ -241,6 +253,7 @@ class PPOTrainerO2(BaseRLTrainerOracle):
                 
         total_sim = np.sum(sim_list)
         total_sim /= (len(picture_list)*(len(picture_list)-1))
+        """
         return total_sim
 
     def _load_subgoal_list(self, current_episodes, n, semantic_scene_df):
@@ -1002,8 +1015,14 @@ class PPOTrainerO2(BaseRLTrainerOracle):
         return Meteor_score([reference], candidate)
 
     def get_explored_picture(self, infos):
-        explored_map = infos["map"]
+        explored_map = infos["map"].copy()
         fog_of_war_map = infos["fog_of_war_mask"]
+
+        explored_map[(fog_of_war_map == 1) & (explored_map == maps.MAP_VALID_POINT)] = maps.MAP_INVALID_POINT
+        explored_map[(fog_of_war_map == 0) & ((explored_map == maps.MAP_VALID_POINT) | (explored_map == maps.MAP_INVALID_POINT))] = maps.MAP_BORDER_INDICATOR
+
+        
+        """
         y, x = explored_map.shape
 
         for i in range(y):
@@ -1013,8 +1032,9 @@ class PPOTrainerO2(BaseRLTrainerOracle):
                         explored_map[i][j] = maps.MAP_INVALID_POINT
                 else:
                     if explored_map[i][j] in [maps.MAP_VALID_POINT, maps.MAP_INVALID_POINT]:
-                        explored_map[i][j] = maps.MAP_BORDER_INDICATOR
-            
+                        explored_map[i][j] = maps.MAP_BORDER_INDICATOR 
+        """
+
         return explored_map, fog_of_war_map
 
     def _eval_checkpoint(self, checkpoint_path: str, log_manager: LogManager, date: str, checkpoint_index: int = 0) -> None:
@@ -1194,9 +1214,8 @@ class PPOTrainerO2(BaseRLTrainerOracle):
                 rouge_L_score.append(0)
                 meteor_score.append(0)
                 
-            for n in range(len(observations)):
-                self._taken_picture_list[n].append([pic_val[n], observations[n]["rgb"], rewards[n][6], rewards[n][7], infos[n]["explored_map"]])
-                
+                self._taken_picture_list[n].append([rewards[n][2], observations[n]["rgb"], rewards[n][6], rewards[n][7], infos[n]["explored_map"]])
+                    
             reward = torch.tensor(reward, dtype=torch.float, device=self.device).unsqueeze(1)
             exp_area = torch.tensor(exp_area, dtype=torch.float, device=self.device).unsqueeze(1)
             picture_value = torch.tensor(picture_value, dtype=torch.float, device=self.device).unsqueeze(1)
@@ -1557,9 +1576,8 @@ class PPOTrainerO2(BaseRLTrainerOracle):
                 rouge_L_score.append(0)
                 meteor_score.append(0)
                 
-            for n in range(len(observations)):
-                self._taken_picture_list[n].append([pic_val[n], observations[n]["rgb"], rewards[n][6], rewards[n][7]])
-
+                self._taken_picture_list[n].append([rewards[n][2], observations[n]["rgb"], rewards[n][6], rewards[n][7], infos[n]["explored_map"]])
+                
             reward = torch.tensor(reward, dtype=torch.float, device=self.device).unsqueeze(1)
             exp_area = torch.tensor(exp_area, dtype=torch.float, device=self.device).unsqueeze(1)
             picture_value = torch.tensor(picture_value, dtype=torch.float, device=self.device).unsqueeze(1)

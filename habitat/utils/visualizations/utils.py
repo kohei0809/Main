@@ -266,12 +266,14 @@ def observations_to_image(observation: Dict, info: Dict, action: np.ndarray=None
             top_down_map, info["new_top_down_map"]["fog_of_war_mask"]
         )
         map_agent_pos = info["new_top_down_map"]["agent_map_coord"]
+        """
         top_down_map = maps.draw_agent(
             image=top_down_map,
             agent_center_coord=map_agent_pos,
             agent_rotation=info["new_top_down_map"]["agent_angle"],
             agent_radius_px=top_down_map.shape[0] // 16,
         )
+        """
 
         if top_down_map.shape[0] > top_down_map.shape[1]:
             top_down_map = np.rot90(top_down_map, 1)

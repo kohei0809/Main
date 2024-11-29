@@ -50,6 +50,9 @@ class MaximumInfoDatasetV1(Dataset):
         dataset_dir = os.path.dirname(
             config.DATA_PATH.format(split=config.SPLIT)
         )
+        logger.info("################")
+        logger.info(f"dataset_dir: {dataset_dir}")
+        logger.info("################")
 
         cfg = config.clone()
         cfg.defrost()
