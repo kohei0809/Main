@@ -140,10 +140,10 @@ def test(run_type: str, area_reward_type: str, opts=None):
         config.defrost()
         config.RL.PPO.num_mini_batch = 4
         config.NUM_PROCESSES = 28
-        #config.RL.PPO.num_mini_batch = 1
-        #config.NUM_PROCESSES = 1
+        config.RL.PPO.num_mini_batch = 1
+        config.NUM_PROCESSES = 1
         #config.TEST_EPISODE_COUNT = 220
-        config.TEST_EPISODE_COUNT = 1100
+        config.TEST_EPISODE_COUNT = 110
         config.VIDEO_OPTION = ["disk"]
         #config.VIDEO_OPTION = []
         config.TORCH_GPU_ID = 0
@@ -211,8 +211,8 @@ def test(run_type: str, area_reward_type: str, opts=None):
     np.random.seed(config.TASK_CONFIG.SEED)
     
     config.defrost()
-    config.TASK_CONFIG.DATASET.SPLIT = "train"
-    config.EVAL.SPLIT = "train"
+    #config.TASK_CONFIG.DATASET.SPLIT = "train"
+    #config.EVAL.SPLIT = "train"
     config.TRAINER_NAME = agent_type
     config.TASK_CONFIG.TRAINER_NAME = agent_type
     config.CHECKPOINT_FOLDER = "cpt/" + start_date

@@ -337,24 +337,7 @@ class PPOTrainerO3(BaseRLTrainerOracle):
 
         # 類似度の合計を計算
         total_sim = np.sum(sim_matrix) / (len(picture_list) * (len(picture_list) - 1))
-        
-            
-        """
-        sim_list = [[-10 for _ in range(len(picture_list))] for _ in range(len(picture_list))]
 
-        for i in range(len(picture_list)):
-            emd = self._create_new_image_embedding(picture_list[i][1])
-            for j in range(i, len(picture_list)):
-                if i == j:
-                    sim_list[i][j] = 0.0
-                    continue
-                emd2 = self._create_new_image_embedding(picture_list[j][1])
-                sim_list[i][j] = util.pytorch_cos_sim(emd, emd2).item()
-                sim_list[j][i] = sim_list[i][j]
-                
-        total_sim = np.sum(sim_list)
-        total_sim /= (len(picture_list)*(len(picture_list)-1))
-        """
         return total_sim
 
     def _load_subgoal_list(self, current_episodes, n, semantic_scene_df):

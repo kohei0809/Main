@@ -359,7 +359,7 @@ class PPOTrainerO5(BaseRLTrainerOracle):
             if self.icm_fd is not None:
                 reward.append(0)
             else:
-                reward.append(rewards[n][0])
+                reward.append(rewards[n][0]+0.01) # slack reward分足す
             area_rate.append(rewards[n][1])
 
         if (self.icm_fd is not None) and (step >= 1):
@@ -891,9 +891,27 @@ class PPOTrainerO5(BaseRLTrainerOracle):
 
     def _select_pictures(self, taken_picture_list):
         results = []
+        results_emb = []  # 埋め込みキャッシュ
         res_val = 0.0
 
         sorted_picture_list = sorted(taken_picture_list, key=lambda x: x[0], reverse=True)
+        
+        for item in sorted_picture_list:
+            if len(results) == self._num_picture:
+                break
+
+            # 埋め込みを生成
+            emd = self._create_new_image_embedding(item[1])
+
+            # 保存するか判定
+            if self._decide_save(emd, results_emb):
+                results.append(item)
+                results_emb.append(emd)  # 埋め込みをキャッシュ
+                res_val += item[0]
+
+        return results, res_val
+
+        """
         i = 0
         while True:
             if len(results) == self._num_picture:
@@ -910,6 +928,7 @@ class PPOTrainerO5(BaseRLTrainerOracle):
 
         res_val /= len(results)
         return results, res_val
+        """
 
     def _select_pictures2(self, taken_picture_list):
         n = len(taken_picture_list)
@@ -994,7 +1013,20 @@ class PPOTrainerO5(BaseRLTrainerOracle):
 
         return results, res_val
 
-    def _decide_save(self, emd, results):
+    def _decide_save(self, emd, results_emb):
+        if not results_emb:
+            return True
+
+        # 既存の埋め込みと類似度を一括計算
+        all_embs = torch.stack(results_emb)
+        similarities = util.pytorch_cos_sim(emd, all_embs).squeeze(0)
+
+        # 類似度が閾値以上の場合は保存しない
+        if torch.any(similarities >= self._select_threthould):
+            return False
+        return True
+        
+        """
         for i in range(len(results)):
             check_emb = self._create_new_image_embedding(results[i][1])
 
@@ -1002,6 +1034,7 @@ class PPOTrainerO5(BaseRLTrainerOracle):
             if sim >= self._select_threthould:
                 return False
         return True
+        """
 
 
     def _create_results_image(self, picture_list, infos):
@@ -1668,7 +1701,6 @@ class PPOTrainerO5(BaseRLTrainerOracle):
             )
             
             reward = []
-            pic_val = []
             similarity = []
             area_rate = [] # 探索済みのエリア()
             bleu_score = []
@@ -1683,7 +1715,6 @@ class PPOTrainerO5(BaseRLTrainerOracle):
             n_envs = self.envs.num_envs
             for n in range(n_envs):
                 reward.append(rewards[n][0])
-                pic_val.append(rewards[n][2])
                 similarity.append(0)
                 area_rate.append(rewards[n][1])
                 bleu_score.append(0)
@@ -1695,7 +1726,7 @@ class PPOTrainerO5(BaseRLTrainerOracle):
                 hes_score.append(0)
                 ed_score.append(0)
                 
-                self._taken_picture_list[n].append([rewards[n][2], observations[n]["rgb"], rewards[n][6], rewards[n][7], infos[n]["explored_map"]])
+                self._taken_picture_list[n].append([rewards[n][2], observations[n]["rgb"], rewards[n][5], rewards[n][6], infos[n]["explored_map"]])
                     
             reward = torch.tensor(reward, dtype=torch.float, device=self.device).unsqueeze(1)
             area_rate = torch.tensor(area_rate, dtype=torch.float, device=self.device).unsqueeze(1)

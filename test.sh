@@ -30,9 +30,9 @@ conda activate habitat2
 
 
 #python speaker_policy.py
-python search_similar_description.py
+#python search_similar_description.py
 #python make_hes_log.py
-#python test_llava/test_llava.py
+python test_llava/test_llava.py
 #python test_llava/test_llava2.py
 #python test_llava/test_llava_next.py
 #python human_metrics.py

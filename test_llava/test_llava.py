@@ -1,5 +1,6 @@
 import os
 import torch
+import numpy as np
 #from LLaVA.llava.constants import IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
 from llava.constants import IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
 from llava.conversation import conv_templates, SeparatorStyle
@@ -11,6 +12,11 @@ import requests
 from io import BytesIO
 import matplotlib.pyplot as plt
 from transformers import TextStreamer
+
+import torchvision.transforms as transforms
+from habitat.core.logging import logger
+
+import cv2
 
 model_path = "liuhaotian/llava-v1.5-13b"
 load_4bit = True
@@ -43,7 +49,21 @@ def generate_response(image, input_text, model_path):
     conv = conv_templates[conv_mode].copy()
     roles = conv.roles if "mpt" not in model_name.lower() else ('user', 'assistant')
 
+    logger.info(f"image_tensor={image.size}")
+    image_array = np.array(image)
+    image_array = cv2.resize(
+            image_array,
+            (336, 336),
+            interpolation=cv2.INTER_CUBIC,
+        )
+    image = Image.fromarray(image_array)
     image_tensor = image_processor.preprocess(image, return_tensors='pt')['pixel_values'].half().cuda()
+    logger.info(f"image_tensor={image_tensor[0].shape}")
+    image_tensor2 = image_tensor[0] * 255
+    image_tensor2 = image_tensor2.to(torch.uint8)
+    image_tensor2 = transforms.ToPILImage()(image_tensor2)
+    # 画像を保存
+    image_tensor2.save("output_image2.png")
 
     inp = input_text
     print(f"ROLE: {roles[1]}: ", end="")
@@ -140,49 +160,35 @@ def human_test():
 
 if __name__ == '__main__':
     
-    human_test()
+    #human_test()
     
     #model_path = "/gs/fs/tga-aklab/matsumoto/Main/model/llava-v1.5-7b/"
     model_path = "liuhaotian/llava-v1.5-13b"
-    image_file = "/gs/fs/tga-aklab/matsumoto/Main/result_images/matsumoto/result_1.png"
-    input_text = "<Instructions>\n"\
-                "You are an excellent property writer.\n"\
-                "The picture you have entered consists of 10 pictures of a building, 5 horizontally and 2 vertically placed in a single picture.\n"\
-                "Each picture is also separated by a black line.\n"\
-                "From each picture, understand the details of this building's environment, and in the form of a summary of these pictures, describe this building's environment in detail, paying attention to the <Notes>.\n"\
-                "In doing so, please also consider the location of each picture as indicated by <Location Information>.\n"\
-                "\n\n"\
-                "<Location Information>\n"\
-                "The top leftmost picture is picture_1, and from its right to left are picture_2, picture_3, picture_4, and picture_5.\n"\
-                "Similarly, the bottom-left corner is picture_6, and from its right, picture_7, picture_8, picture_9, and picture_10.\n"\
-                "The following is the location information for each picture.\n\n"\
-                "picture_1 : (-1.720, 10.050)\n"\
-                "picture_2 : (-3.336, 4.277)\n"\
-                "picture_3 : (-0.250, -4.250)\n"\
-                "picture_4 : (6.473, -9.606)\n"\
-                "picture_5 : (7.103, -7.400)\n"\
-                "picture_6 : (2.094, -18.094)\n"\
-                "picture_7 : (-5.632, -17.180)\n"\
-                "picture_8 : (-4.080, 0.388)\n"\
-                "picture_9 : (-1.059, -13.591)\n"\
-                "picture_10 : (-0.066, -7.193)\n"\
-                "<Notes>\n"\
-                "・Note that each picture is taken at the location indicated by <Location Information>, and that adjacent pictures are not close in location.\n"\
-                "・Please output the location information for each picture from <Location Information>.\n"\
-                "・When describing the environment, do not mention whether it was taken from that picture or the black line separating each picture.\n"\
-                "・Only refer to the structure of the description from <Example of output>, and do not use your imagination to describe things not shown in the picture.\n"\
-                "\n\n"\
-                "<Example of output>\n"\
-                "This building features a spacious layout with multiple living rooms, bedrooms, and bathrooms. A living space with a fireplace is next to a fully equipped kitchen. There are also three bedrooms on the left side of the building, with a bathroom nearby. There are plenty of books to work with.\n"\
-                "Overall, the apartment is spacious and well-equipped, with many paintings on the walls."
-        
-    #image = load_image(image_file)
-    #response = generate_response(image, input_text, model_path)
+    image_file = "/gs/fs/tga-aklab/matsumoto/Main/map_image.png"
+
+    input_text = "The image is a map of a certain environment.\n"\
+                "White areas are already explored, and black areas are unexplored or walls.\n"\
+                "This map is colored in “Red”, “Green”, “Blue”, “Yellow”, “Cyan”, “Magenta”, “Orange”, “Purple”, “Brown”, and “Pink” one area at a time.\n"\
+                "Please describe the absolute positions of the colored areas in detail."
+    """
+    input_text = "The image is a map of a certain environment. \n"\
+                "The white areas have already been explored, and the black areas are unexplored or walls. \n"\
+                "This map is also [255, 0, 0], [0, 255, 0], [0, 0, 255], [255, 255, 0], [0, 255, 255], [255, 0 , 255], [255, 165, 0], [128, 0, 128], [139, 69, 19], [255, 192, 203] are each divided into one area by one color. \n"\
+                "Please explain in detail the absolute positional relationship of these color-coded areas."
+    """
+    input_text = "You are a robot that moves around based on a map. \n"\
+                "In the map, white areas are already explored, and black areas are unexplored or walls. \n"\
+                "Please explain in detail how you moved when moving in the order Red → Green → Blue → Yellow → Cyan → Magenta → Orange → Purple → Brown → Pink on this map."
+    input_text = "You are a robot that moves around based on a map. \n"\
+                "In the map, white areas are already explored, and black areas are unexplored or walls. \n"\
+                "Using this map, when you move in the order “Red”, “Green”, “Blue”, “Yellow”, “Cyan”, “Magenta”, “Orange”, “Purple”, “Brown”, and “Pink”, please explain in detail how you moved around in this environment, based on spatial information."
+    image = load_image(image_file)
+    response = generate_response(image, input_text, model_path)
 
     #plt.imshow(image)
     #plt.axis('off') 
     #plt.show()
 
-    #print(f"Q:{input_text}")
-    #print(f"A:{response[4:-4]}")
+    print(f"Q:{input_text}")
+    print(f"A:{response[4:-4]}")
     print("FINISH !!")

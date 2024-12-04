@@ -1625,11 +1625,10 @@ class ExploredMap(Measure):
         self._metric = {
             "map": clipped_house_map,
             "fog_of_war_mask": clipped_fog_of_war_map,
-            "agent_map_coord": (
-                map_agent_x - (self._ind_x_min - self._grid_delta),
-                map_agent_y - (self._ind_y_min - self._grid_delta),
-            ),
-            "agent_angle": self.get_polar_angle(),
+            "ind_x_min": self._ind_x_min,
+            "ind_y_min": self._ind_y_min,
+            "grid_delta": self._grid_delta,
+            "map_resolution": self._map_resolution
         }
 
     def get_polar_angle(self):

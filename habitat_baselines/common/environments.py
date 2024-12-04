@@ -231,11 +231,13 @@ class InfoRLEnv(RLEnv):
         measure = self._env.get_metrics()[self._picture_measure_name]
         picture_value = measure
         obs_num = 0.0
+        agent_position = self._env._sim.get_agent_state().position        
+        
         if "ci" in info:
             obs_num = info["ci"]
         # area報酬のみ
         if self._core_env_config.AREA_REWARD in self.area_type:
-            reward = 0
+            reward = self._rl_config.SLACK_REWARD
             # area_rewardの計算
             _top_down_map = info["top_down_map"]["map"]
             _fog_of_war_map = info["top_down_map"]["fog_of_war_mask"]
@@ -245,7 +247,7 @@ class InfoRLEnv(RLEnv):
             if self._core_env_config.AREA_REWARD == "coverage":
                 coverage_reward = self._cal_coverage_num(_top_down_map, _fog_of_war_map)
                 #logger.info(f"coverage_reward={coverage_reward}")
-                coverage_reward = coverage_reward * 0.01
+                coverage_reward = coverage_reward * 0.001
 
                 reward = coverage_reward - self._previous_area_reward
                 self._previous_area_reward = coverage_reward
@@ -265,42 +267,8 @@ class InfoRLEnv(RLEnv):
             #logger.info(f"area_rate_inc={area_rate_inc}")
             self._previous_area_rate = current_area
 
-            return reward, area_rate_inc, picture_value, 0.0, obs_num, self._take_picture(), self._scene_data, -1, -1
+            return reward, area_rate_inc, picture_value, obs_num, self._scene_data, agent_position[0], agent_position[2]
 
-        # area報酬以外も与える
-        else:
-            reward = self._rl_config.SLACK_REWARD
-            output = 0.0
-
-            if "smooth_coverage" in info:
-                smooth_current_area = info["smooth_coverage"]
-                area_reward = smooth_current_area / 50      
-                reward += area_reward
-                #logger.info(f"smooth_current_area={smooth_current_area}, smooth_value={smooth_value}")
-            else:
-                # area_rewardの計算
-                _top_down_map = info["top_down_map"]["map"]
-                _fog_of_war_map = info["top_down_map"]["fog_of_war_mask"]
-
-                coverage_reward = self._cal_coverage_num(_top_down_map, _fog_of_war_map)
-                #logger.info(f"coverage_reward={coverage_reward}")
-                coverage_reward = coverage_reward * 0.01
-
-                reward += (coverage_reward - self._previous_area_reward)
-                self._previous_area_reward = coverage_reward
-
-                current_area = self._cal_explored_rate(_top_down_map, _fog_of_war_map)
-                current_area *= 10
-                # area_rewardを足す
-                area_reward = current_area - self._previous_area_rate
-                #reward += area_reward
-                area_rate_inc = current_area - self._previous_area_rate
-                self._previous_area_rate = current_area
-
-            agent_position = self._env._sim.get_agent_state().position
-
-            return reward, area_reward, picture_value, output, obs_num, self._take_picture(), self._scene_data, agent_position[0], agent_position[2]
-    
     def get_polar_angle(self):
         agent_state = self._env._sim.get_agent_state()
         # quaternion is in x, y, z, w format

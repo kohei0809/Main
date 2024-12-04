@@ -367,24 +367,7 @@ class PPOTrainerO(BaseRLTrainerOracle):
 
         # 類似度の合計を計算
         total_sim = np.sum(sim_matrix) / (len(picture_list) * (len(picture_list) - 1))
-        
-            
-        """
-        sim_list = [[-10 for _ in range(len(picture_list))] for _ in range(len(picture_list))]
 
-        for i in range(len(picture_list)):
-            emd = self._create_new_image_embedding(picture_list[i][1])
-            for j in range(i, len(picture_list)):
-                if i == j:
-                    sim_list[i][j] = 0.0
-                    continue
-                emd2 = self._create_new_image_embedding(picture_list[j][1])
-                sim_list[i][j] = util.pytorch_cos_sim(emd, emd2).item()
-                sim_list[j][i] = sim_list[i][j]
-                
-        total_sim = np.sum(sim_list)
-        total_sim /= (len(picture_list)*(len(picture_list)-1))
-        """
         return total_sim
 
     def _load_subgoal_list(self, current_episodes, n, semantic_scene_df):
@@ -489,7 +472,6 @@ class PPOTrainerO(BaseRLTrainerOracle):
         batch = batch_obs(observations, device=self.device)
         
         reward = []
-        pic_val = []
         picture_value = []
         similarity = []
         pic_sim = []
@@ -505,8 +487,7 @@ class PPOTrainerO(BaseRLTrainerOracle):
         hes_score = []
         n_envs = self.envs.num_envs
         for n in range(n_envs):
-            reward.append(rewards[n][0]/10 - 0.01)
-            pic_val.append(rewards[n][2])
+            reward.append(rewards[n][0])
             picture_value.append(0)
             similarity.append(0)
             pic_sim.append(0)
@@ -524,9 +505,9 @@ class PPOTrainerO(BaseRLTrainerOracle):
         current_episodes = self.envs.current_episodes()
         for n in range(len(observations)):
             if len(self._taken_picture_list[n]) == 0:
-                self._load_subgoal_list(current_episodes, n, rewards[n][6])
+                self._load_subgoal_list(current_episodes, n, rewards[n][4])
             
-            self._taken_picture_list[n].append([pic_val[n], observations[n]["rgb"], rewards[n][6], rewards[n][7], infos[n]["explored_map"]])
+            self._taken_picture_list[n].append([rewards[n][2], observations[n]["rgb"], rewards[n][5], rewards[n][6], infos[n]["explored_map"]])
                 
             subgoal_reward[n] = self._calculate_subgoal_reward(semantic_obs[n], n)
             reward[n] += subgoal_reward[n]
@@ -984,9 +965,27 @@ class PPOTrainerO(BaseRLTrainerOracle):
 
     def _select_pictures(self, taken_picture_list):
         results = []
+        results_emb = []  # 埋め込みキャッシュ
         res_val = 0.0
 
         sorted_picture_list = sorted(taken_picture_list, key=lambda x: x[0], reverse=True)
+        
+        for item in sorted_picture_list:
+            if len(results) == self._num_picture:
+                break
+
+            # 埋め込みを生成
+            emd = self._create_new_image_embedding(item[1])
+
+            # 保存するか判定
+            if self._decide_save(emd, results_emb):
+                results.append(item)
+                results_emb.append(emd)  # 埋め込みをキャッシュ
+                res_val += item[0]
+
+        return results, res_val
+
+        """
         i = 0
         while True:
             if len(results) == self._num_picture:
@@ -1003,6 +1002,7 @@ class PPOTrainerO(BaseRLTrainerOracle):
 
         res_val /= len(results)
         return results, res_val
+        """
 
     def _select_random_pictures(self, taken_picture_list):
         results = taken_picture_list
@@ -1018,7 +1018,20 @@ class PPOTrainerO(BaseRLTrainerOracle):
         return results, res_val
 
 
-    def _decide_save(self, emd, results):
+    def _decide_save(self, emd, results_emb):
+        if not results_emb:
+            return True
+
+        # 既存の埋め込みと類似度を一括計算
+        all_embs = torch.stack(results_emb)
+        similarities = util.pytorch_cos_sim(emd, all_embs).squeeze(0)
+
+        # 類似度が閾値以上の場合は保存しない
+        if torch.any(similarities >= self._select_threthould):
+            return False
+        return True
+        
+        """
         for i in range(len(results)):
             check_emb = self._create_new_image_embedding(results[i][1])
 
@@ -1026,6 +1039,7 @@ class PPOTrainerO(BaseRLTrainerOracle):
             if sim >= self._select_threthould:
                 return False
         return True
+        """
 
 
     def _create_results_image(self, picture_list, infos):
@@ -1608,7 +1622,6 @@ class PPOTrainerO(BaseRLTrainerOracle):
             )
             
             reward = []
-            pic_val = []
             picture_value = []
             similarity = []
             pic_sim = []
@@ -1624,7 +1637,6 @@ class PPOTrainerO(BaseRLTrainerOracle):
             n_envs = self.envs.num_envs
             for n in range(n_envs):
                 reward.append(rewards[n][0])
-                pic_val.append(rewards[n][2])
                 picture_value.append(0)
                 similarity.append(0)
                 pic_sim.append(0)
@@ -1968,7 +1980,6 @@ class PPOTrainerO(BaseRLTrainerOracle):
             )
             
             reward = []
-            pic_val = []
             picture_value = []
             similarity = []
             pic_sim = []
@@ -1984,7 +1995,6 @@ class PPOTrainerO(BaseRLTrainerOracle):
 
             for n in range(n_envs):
                 reward.append(rewards[n][0])
-                pic_val.append(rewards[n][2])
                 picture_value.append(0)
                 similarity.append(0)
                 pic_sim.append(0)
@@ -2328,7 +2338,7 @@ class PPOTrainerO(BaseRLTrainerOracle):
             for n in range(n_envs):
                 pic_val = (rewards[n][2])
                 depth_ave = np.mean(observations[n]["depth"])
-                object_num = rewards[n][4]
+                object_num = rewards[n][3]
                 self.pictures[n].append([observations[n]["rgb"], depth_ave, object_num, pic_val])
                 exp_area.append(rewards[n][1])
 

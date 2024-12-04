@@ -52,7 +52,6 @@ from llava.model.builder import load_pretrained_model
 from llava.utils import disable_torch_init
 from llava.mm_utils import tokenizer_image_token, get_model_name_from_path
 from transformers import TextStreamer
-#from transformers import AutoProcessor, LlavaNextForConditionalGeneration 
 
 import nltk
 from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
@@ -63,6 +62,8 @@ from nltk import word_tokenize, pos_tag
 from nltk.corpus import stopwords
 from nltk.stem import WordNetLemmatizer
 
+from habitat.core.utils import try_cv2_import
+cv2 = try_cv2_import()
 
 # SBERT + MLPによる回帰モデルの定義
 class SBERTRegressionModel(nn.Module):
@@ -168,6 +169,32 @@ class PPOTrainerO2(BaseRLTrainerOracle):
 
         # 単語のステミング処理
         self.lemmatizer = WordNetLemmatizer()
+
+        self.color_list = [
+            [255, 0, 0], # Red
+            [0, 255, 0], # Green
+            [0, 0, 255], # Blue
+            [255, 255, 0], # Yellow
+            [0, 255, 255], # Cyan
+            [255, 0, 255], # Magenta
+            [255, 165, 0], # Orange
+            [128, 0, 128], # Purple
+            [139, 69, 19], # Brown
+            [255, 192, 203] # Pink
+        ]
+
+        self.color_name_list = [
+            "Red",
+            "Green",
+            "Blue",
+            "Yellow",
+            "Cyan",
+            "Magenta",
+            "Orange",
+            "Purple",
+            "Brown",
+            "Pink",
+        ]
 
     def get_txt2dict(self, txt_path):
         data_dict = {}
@@ -338,24 +365,7 @@ class PPOTrainerO2(BaseRLTrainerOracle):
 
         # 類似度の合計を計算
         total_sim = np.sum(sim_matrix) / (len(picture_list) * (len(picture_list) - 1))
-        
-            
-        """
-        sim_list = [[-10 for _ in range(len(picture_list))] for _ in range(len(picture_list))]
 
-        for i in range(len(picture_list)):
-            emd = self._create_new_image_embedding(picture_list[i][1])
-            for j in range(i, len(picture_list)):
-                if i == j:
-                    sim_list[i][j] = 0.0
-                    continue
-                emd2 = self._create_new_image_embedding(picture_list[j][1])
-                sim_list[i][j] = util.pytorch_cos_sim(emd, emd2).item()
-                sim_list[j][i] = sim_list[i][j]
-                
-        total_sim = np.sum(sim_list)
-        total_sim /= (len(picture_list)*(len(picture_list)-1))
-        """
         return total_sim
 
     def _load_subgoal_list(self, current_episodes, n, semantic_scene_df):
@@ -450,7 +460,6 @@ class PPOTrainerO2(BaseRLTrainerOracle):
         batch = batch_obs(observations, device=self.device)
         
         reward = []
-        pic_val = []
         picture_value = []
         similarity = []
         pic_sim = []
@@ -466,8 +475,7 @@ class PPOTrainerO2(BaseRLTrainerOracle):
         hes_score = []
         n_envs = self.envs.num_envs
         for n in range(n_envs):
-            reward.append(rewards[n][0]/10 - 0.01)
-            pic_val.append(rewards[n][2])
+            reward.append(rewards[n][0])
             picture_value.append(0)
             similarity.append(0)
             pic_sim.append(0)
@@ -485,9 +493,9 @@ class PPOTrainerO2(BaseRLTrainerOracle):
         current_episodes = self.envs.current_episodes()
         for n in range(len(observations)):
             if len(self._taken_picture_list[n]) == 0:
-                self._load_subgoal_list(current_episodes, n, rewards[n][6])
+                self._load_subgoal_list(current_episodes, n, rewards[n][4])
             
-            self._taken_picture_list[n].append([pic_val[n], observations[n]["rgb"], rewards[n][6], rewards[n][7], infos[n]["explored_map"]])
+            self._taken_picture_list[n].append([rewards[n][2], observations[n]["rgb"], rewards[n][5], rewards[n][6], infos[n]["explored_map"]])
                 
             subgoal_reward[n] = self._calculate_subgoal_reward(semantic_obs[n], n)
             reward[n] += subgoal_reward[n]
@@ -518,7 +526,7 @@ class PPOTrainerO2(BaseRLTrainerOracle):
                 # 写真の選別
                 self._taken_picture_list[n], picture_value[n] = self._select_pictures(self._taken_picture_list[n])
                 #results_image, positions_x, positions_y = self._create_results_image(self._taken_picture_list[n], infos[n]["explored_map"])
-                results_image, image_list = self._create_results_image2(self._taken_picture_list[n], infos[n]["explored_map"])
+                results_image, image_list = self._create_results_image2(self._taken_picture_list[n])
                     
                 # Ground-Truth descriptionと生成文との類似度の計算 
                 similarity_list = []
@@ -943,9 +951,27 @@ class PPOTrainerO2(BaseRLTrainerOracle):
 
     def _select_pictures(self, taken_picture_list):
         results = []
+        results_emb = []  # 埋め込みキャッシュ
         res_val = 0.0
 
         sorted_picture_list = sorted(taken_picture_list, key=lambda x: x[0], reverse=True)
+        
+        for item in sorted_picture_list:
+            if len(results) == self._num_picture:
+                break
+
+            # 埋め込みを生成
+            emd = self._create_new_image_embedding(item[1])
+
+            # 保存するか判定
+            if self._decide_save(emd, results_emb):
+                results.append(item)
+                results_emb.append(emd)  # 埋め込みをキャッシュ
+                res_val += item[0]
+
+        return results, res_val
+
+        """
         i = 0
         while True:
             if len(results) == self._num_picture:
@@ -962,6 +988,7 @@ class PPOTrainerO2(BaseRLTrainerOracle):
 
         res_val /= len(results)
         return results, res_val
+        """
 
     def _select_random_pictures(self, taken_picture_list):
         results = taken_picture_list
@@ -977,7 +1004,20 @@ class PPOTrainerO2(BaseRLTrainerOracle):
         return results, res_val
 
 
-    def _decide_save(self, emd, results):
+    def _decide_save(self, emd, results_emb):
+        if not results_emb:
+            return True
+
+        # 既存の埋め込みと類似度を一括計算
+        all_embs = torch.stack(results_emb)
+        similarities = util.pytorch_cos_sim(emd, all_embs).squeeze(0)
+
+        # 類似度が閾値以上の場合は保存しない
+        if torch.any(similarities >= self._select_threthould):
+            return False
+        return True
+        
+        """
         for i in range(len(results)):
             check_emb = self._create_new_image_embedding(results[i][1])
 
@@ -985,6 +1025,7 @@ class PPOTrainerO2(BaseRLTrainerOracle):
             if sim >= self._select_threthould:
                 return False
         return True
+        """
 
 
     def _create_results_image(self, picture_list, infos):
@@ -1035,7 +1076,7 @@ class PPOTrainerO2(BaseRLTrainerOracle):
 
         return result_image, x_list, y_list
 
-    def _create_results_image2(self, picture_list, infos):
+    def _create_results_image2(self, picture_list):
         images = []
     
         if len(picture_list) == 0:
@@ -1064,6 +1105,300 @@ class PPOTrainerO2(BaseRLTrainerOracle):
 
         return result_image, images
 
+    def colorize_picture_position(self, explored_map, x_coord, y_coord, color):
+        delta_coord = 1
+        x_max, y_max, _ = explored_map.shape
+
+        for x in range(x_coord-delta_coord, x_coord+delta_coord+1):
+            if (x < 0) or (x >= x_max):
+                logger.info(f"over x={x}, x_max={x_max}")
+                continue
+            for y in range(y_coord-delta_coord, y_coord+delta_coord+1):
+                if (y < 0) or (y >= y_max):
+                    logger.info(f"over y={y}, y_max={y_max}")
+                    continue
+                
+                explored_map[x][y] = color
+
+        return explored_map
+
+    def reshape_explored_map(self, explored_map, height, width):
+        old_h, old_w, _ = explored_map.shape
+    
+        if old_h == 0:
+            old_h = 1
+        if old_w == 0:
+            old_w = 1 
+
+        explored_height = height*2
+        explored_width = int(float(explored_height) / old_h * old_w)
+        # cv2 resize (dsize is width first)
+        explored_map = cv2.resize(
+            explored_map,
+            (explored_width, explored_height),
+            interpolation=cv2.INTER_CUBIC,
+        )
+        return explored_map
+
+    def _create_results_image3(self, picture_list, explored_infos):
+        # 左に探索マップ、右に2✖️5で写真を配置する
+        # 探索マップには、各写真の場所をRGB値を変えながら色分けする
+        images = []
+    
+        if len(picture_list) == 0:
+            return None
+
+        explored_map, _ = self.get_explored_picture(explored_infos) # 探索マップ(探索済みエリアを白、未探索エリアを黒に変更)(値のみの変更)
+        explored_map = explored_to_image(explored_map, explored_infos) # explored_mapをRGBで色付け
+
+        fog_of_war_mask = explored_infos["fog_of_war_mask"]
+        range_x = np.where(np.any(fog_of_war_mask, axis=1))[0]
+        range_y = np.where(np.any(fog_of_war_mask, axis=0))[0]
+
+        ind_x_min = range_x[0]
+        ind_x_max = range_x[-1]
+        ind_y_min = range_y[0]
+        ind_y_max = range_y[-1]
+        grid_delta = explored_infos["grid_delta"]
+        #logger.info(f"explored_map={explored_map.shape}")
+        #logger.info(f"ind_x_min={ind_x_min}, ind_x_max={ind_x_max}, ind_y_min={ind_y_min}, ind_y_max={ind_y_max}, grid_delta={grid_delta}")
+
+        for i in range(self._num_picture):
+            idx = i%len(picture_list)
+            images.append(picture_list[idx][1])
+
+            a_x, a_y = maps.to_grid(
+                picture_list[idx][2],
+                picture_list[idx][3],
+                maps.COORDINATE_MIN,
+                maps.COORDINATE_MAX,
+                explored_infos["map_resolution"],
+            )
+            x_coord = a_x - (explored_infos["ind_x_min"] - explored_infos["grid_delta"])
+            y_coord = a_y - (explored_infos["ind_y_min"] - explored_infos["grid_delta"])
+            
+            #x_coord = x_coord - (ind_x_min - grid_delta)
+            #y_coord = y_coord - (ind_y_min - grid_delta)
+        
+            #logger.info(f"x={picture_list[idx][2]}, y={picture_list[idx][3]}")
+            #logger.info(f"a_x={a_x}, a_y={a_y}")
+            #logger.info(f"x_coord={x_coord}, y_coord={y_coord}")
+
+            # 各写真の撮影場所をRGB値で指定
+            explored_map = self.colorize_picture_position(explored_map, x_coord, y_coord, self.color_list[i])
+
+        explored_map = explored_map[
+            ind_x_min - grid_delta : ind_x_max + grid_delta,
+            ind_y_min - grid_delta : ind_y_max + grid_delta,
+        ]
+    
+        # 探索マップの縦幅を写真の縦幅*2に合わせる
+        height, width, _ = picture_list[0][1].shape
+        explored_map = self.reshape_explored_map(explored_map, height, width)
+
+        exp_height, exp_width, _ = explored_map.shape
+        result_width = width * 5 + exp_width
+        result_height = height * 2
+        result_image = Image.new("RGB", (result_width, result_height))
+
+        # 左に探索マップ、右に写真
+        map_image = Image.fromarray(explored_map)
+        result_image.paste(map_image, (0, 0))
+        
+        for i, image in enumerate(images):
+            x_offset = (i % 5) * width + exp_width
+            y_offset = (i // 5) * height
+            image = Image.fromarray(image)
+            result_image.paste(image, (x_offset, y_offset))
+        
+        draw = ImageDraw.Draw(result_image)
+        for x in range(0, result_width, width):
+            draw.line([(x+exp_width, 0), (x+exp_width, result_height)], fill="black", width=7)
+        for y in range(height, result_height, height):
+            draw.line([(exp_width, y), (result_width, y)], fill="black", width=7)
+
+        result_image.save("/gs/fs/tga-aklab/matsumoto/Main/explored_map.png")
+        return result_image, images
+
+    def _create_results_image5(self, picture_list, explored_infos):
+        # 左に探索マップ、右に2✖️5で写真を配置する
+        # 探索マップにだけを載せ、各写真を撮った場所の文章も返す
+        images = []
+    
+        if len(picture_list) == 0:
+            return None
+
+        explored_map, _ = self.get_explored_picture(explored_infos) # 探索マップ(探索済みエリアを白、未探索エリアを黒に変更)(値のみの変更)
+        explored_map = explored_to_image(explored_map, explored_infos) # explored_mapをRGBで色付け
+
+        fog_of_war_mask = explored_infos["fog_of_war_mask"]
+        range_x = np.where(np.any(fog_of_war_mask, axis=1))[0]
+        range_y = np.where(np.any(fog_of_war_mask, axis=0))[0]
+
+        ind_x_min = range_x[0]
+        ind_x_max = range_x[-1]
+        ind_y_min = range_y[0]
+        ind_y_max = range_y[-1]
+        grid_delta = explored_infos["grid_delta"]
+        #logger.info(f"explored_map={explored_map.shape}")
+        #logger.info(f"ind_x_min={ind_x_min}, ind_x_max={ind_x_max}, ind_y_min={ind_y_min}, ind_y_max={ind_y_max}, grid_delta={grid_delta}")
+        explored_map = explored_map[
+            ind_x_min - grid_delta : ind_x_max + grid_delta,
+            ind_y_min - grid_delta : ind_y_max + grid_delta,
+        ]
+
+        position_description = []
+        position_text1 = "This picture was taken on the "
+        position_text2 = " side of the map."
+        for i in range(self._num_picture):
+            idx = i%len(picture_list)
+            images.append(picture_list[idx][1])
+
+            a_x, a_y = maps.to_grid(
+                picture_list[idx][2],
+                picture_list[idx][3],
+                maps.COORDINATE_MIN,
+                maps.COORDINATE_MAX,
+                explored_infos["map_resolution"],
+            )
+            x_coord = a_x - (explored_infos["ind_x_min"] - explored_infos["grid_delta"])
+            y_coord = a_y - (explored_infos["ind_y_min"] - explored_infos["grid_delta"])
+            
+            x_coord = x_coord - (ind_x_min - grid_delta)
+            y_coord = y_coord - (ind_y_min - grid_delta)
+
+            position_text = position_text1
+            size_x, size_y, _ = explored_map.shape
+            if x_coord < size_x/2:
+                if y_coord < size_y/2:
+                    position_description.append(position_text+"upper left"+position_text2)
+                else:
+                    position_description.append(position_text+"upper right"+position_text2)
+            else:
+                if y_coord < size_y/2:
+                    position_description.append(position_text+"lower left"+position_text2)
+                else:
+                    position_description.append(position_text+"lower right"+position_text2)
+    
+        # 探索マップの縦幅を写真の縦幅*2に合わせる
+        height, width, _ = picture_list[0][1].shape
+        explored_map = self.reshape_explored_map(explored_map, height, width)
+
+        exp_height, exp_width, _ = explored_map.shape
+        result_width = width * 5 + exp_width
+        result_height = height * 2
+        result_image = Image.new("RGB", (result_width, result_height))
+
+        # 左に探索マップ、右に写真
+        map_image = Image.fromarray(explored_map)
+        result_image.paste(map_image, (0, 0))
+        
+        for i, image in enumerate(images):
+            x_offset = (i % 5) * width + exp_width
+            y_offset = (i // 5) * height
+            image = Image.fromarray(image)
+            result_image.paste(image, (x_offset, y_offset))
+        
+        draw = ImageDraw.Draw(result_image)
+        for x in range(0, result_width, width):
+            draw.line([(x+exp_width, 0), (x+exp_width, result_height)], fill="black", width=7)
+        for y in range(height, result_height, height):
+            draw.line([(exp_width, y), (result_width, y)], fill="black", width=7)
+
+        result_image.save("/gs/fs/tga-aklab/matsumoto/Main/explored_map.png")
+        return result_image, images, position_description
+
+    def _create_results_image6(self, picture_list, explored_infos):
+        # 左に探索マップ、右に2✖️5で写真を配置する
+        # 探索マップにだけを載せ、各写真を撮った場所の文章も返す
+        images = []
+    
+        if len(picture_list) == 0:
+            return None
+
+        explored_map, _ = self.get_explored_picture(explored_infos) # 探索マップ(探索済みエリアを白、未探索エリアを黒に変更)(値のみの変更)
+        explored_map = explored_to_image(explored_map, explored_infos) # explored_mapをRGBで色付け
+
+        fog_of_war_mask = explored_infos["fog_of_war_mask"]
+        range_x = np.where(np.any(fog_of_war_mask, axis=1))[0]
+        range_y = np.where(np.any(fog_of_war_mask, axis=0))[0]
+
+        ind_x_min = range_x[0]
+        ind_x_max = range_x[-1]
+        ind_y_min = range_y[0]
+        ind_y_max = range_y[-1]
+        grid_delta = explored_infos["grid_delta"]
+        #logger.info(f"explored_map={explored_map.shape}")
+        #logger.info(f"ind_x_min={ind_x_min}, ind_x_max={ind_x_max}, ind_y_min={ind_y_min}, ind_y_max={ind_y_max}, grid_delta={grid_delta}")
+        explored_map = explored_map[
+            ind_x_min - grid_delta : ind_x_max + grid_delta,
+            ind_y_min - grid_delta : ind_y_max + grid_delta,
+        ]
+
+        position_description = []
+        position_text1 = "This picture was taken on the "
+        position_text2 = " side of the map."
+        for i in range(self._num_picture):
+            idx = i%len(picture_list)
+            images.append(picture_list[idx][1])
+
+            a_x, a_y = maps.to_grid(
+                picture_list[idx][2],
+                picture_list[idx][3],
+                maps.COORDINATE_MIN,
+                maps.COORDINATE_MAX,
+                explored_infos["map_resolution"],
+            )
+            x_coord = a_x - (explored_infos["ind_x_min"] - explored_infos["grid_delta"])
+            y_coord = a_y - (explored_infos["ind_y_min"] - explored_infos["grid_delta"])
+            
+            x_coord = x_coord - (ind_x_min - grid_delta)
+            y_coord = y_coord - (ind_y_min - grid_delta)
+
+            # 各写真の撮影場所をRGB値で指定
+            explored_map = self.colorize_picture_position(explored_map, x_coord, y_coord, self.color_list[i])
+
+            position_text = position_text1
+            size_x, size_y, _ = explored_map.shape
+            if x_coord < size_x/2:
+                if y_coord < size_y/2:
+                    position_description.append(position_text+"upper left"+position_text2)
+                else:
+                    position_description.append(position_text+"upper right"+position_text2)
+            else:
+                if y_coord < size_y/2:
+                    position_description.append(position_text+"lower left"+position_text2)
+                else:
+                    position_description.append(position_text+"lower right"+position_text2)
+    
+        # 探索マップの縦幅を写真の縦幅*2に合わせる
+        height, width, _ = picture_list[0][1].shape
+        explored_map = self.reshape_explored_map(explored_map, height, width)
+
+        exp_height, exp_width, _ = explored_map.shape
+        result_width = width * 5 + exp_width
+        result_height = height * 2
+        result_image = Image.new("RGB", (result_width, result_height))
+
+        # 左に探索マップ、右に写真
+        map_image = Image.fromarray(explored_map)
+        map_image.save("/gs/fs/tga-aklab/matsumoto/Main/map_image.png")
+        result_image.paste(map_image, (0, 0))
+        
+        for i, image in enumerate(images):
+            x_offset = (i % 5) * width + exp_width
+            y_offset = (i // 5) * height
+            image = Image.fromarray(image)
+            result_image.paste(image, (x_offset, y_offset))
+        
+        draw = ImageDraw.Draw(result_image)
+        for x in range(0, result_width, width):
+            draw.line([(x+exp_width, 0), (x+exp_width, result_height)], fill="black", width=7)
+        for y in range(height, result_height, height):
+            draw.line([(exp_width, y), (result_width, y)], fill="black", width=7)
+
+        #result_image.save("/gs/fs/tga-aklab/matsumoto/Main/explored_map.png")
+        return result_image, images, position_description
 
     def create_description_from_results_image(self, results_image, x_list, y_list, input_change=False):
         input_text = "<Instructions>\n"\
@@ -1121,6 +1456,117 @@ class PPOTrainerO2(BaseRLTrainerOracle):
         response = response[4:-4]
 
         return response, image_descriptions
+
+    def create_input_prompt(self, image_list, caption=False):
+        input_text1 = "# Instructions\n"\
+                    "You are an excellent property writer.\n"\
+                    "Please understand the details of the environment of this building from the pictures you have been given and explain what it is like to be in this environment as a person in this environment."
+
+        image_descriptions = []
+        for image in image_list:
+            if caption == True:
+                response = self._create_caption(image)
+            else:
+                response = self.generate_response(image, input_text1)
+                response = response[4:-4]
+            image_descriptions.append(response)
+
+        input_text2 = "# Instructions\n"\
+                    "You are an excellent property writer.\n"\
+                    "# Each_Description is a description of the building in the pictures you have entered. Please summarize these and write a description of the entire environment as if you were a person in this environment.\n"\
+                    "Also, the map on the left of the input image is a map of this building, and the locations where each picture was taken are indicated by changing the RGB values as written in # Picture_Color.\n"\
+                    "\n"\
+                    "# Each_Description\n"
+        input_rgb = "# Picture_Color\n"
+        input_text3 = "# Notes\n"\
+                    "・Please summarize # Each_Description and write a description of the entire environment as if you were a person in this environment.\n"\
+                    "・Please note that the sentences in # Each_Description are not necessarily close in distance.\n"\
+                    "・Please find the positions of each picture on the map on the left based on the RGB values in # Picture_Color and include that information in output text."\
+                    "・Please write approximately 100 words.\n"
+
+        for i in range(self._num_picture):
+            description = image_descriptions[i]
+            each_description = "・" + description + "\n"
+            input_text2 += each_description
+
+            rgb = self.color_list[i]
+            #rgb = self.color_name_list[i]
+            input_rgb += f"[{i}] {rgb}\n"
+
+        input_text = input_text2 + "\n" + input_rgb + "\n" + input_text3
+        return input_text
+
+    def create_input_prompt2(self, image_list, caption=False):
+        input_text1 = "# Instructions\n"\
+                    "You are an excellent property writer.\n"\
+                    "Please understand the details of the environment of this building from the pictures you have been given and explain what it is like to be in this environment as a person in this environment."
+
+        image_descriptions = []
+        for image in image_list:
+            if caption == True:
+                response = self._create_caption(image)
+            else:
+                response = self.generate_response(image, input_text1)
+                response = response[4:-4]
+            image_descriptions.append(response)
+
+        input_text2 = "# Instructions\n"\
+                    "You are an excellent property writer.\n"\
+                    "# Each_Description is a description of the building in the pictures you have entered. Please summarize these and write a description of the entire environment as if you were a person in this environment.\n"\
+                    "\n"\
+                    "# Requirements\n"\
+                     "・Please summarize # Each_Description and write a description of the entire environment as if you were a person in this environment.\n"\
+                    "・The map on the left is a map of the environment, and the pictures on the right are the pictures that are explained in #Each_Description. The map shows the location where each picture was taken, marked in different colors, so please write an output sentence that takes into account the relative positions of each picture.\n"\
+                    "・Please note that the sentences in # Each_Description are not necessarily close in distance.\n"\
+                    "・Please find the location where each picture was taken based on # Position_Information and include that information in the text.\n"\
+                    "・Please write approximately 100 words.\n"\
+                    "\n"\
+                    "# Each_Description\n"
+
+        for i in range(self._num_picture):
+            description = image_descriptions[i]
+            rgb = self.color_list[i]
+            #rgb = self.color_name_list[i]
+            each_description = f"{rgb}: {description}\n"
+            input_text2 += each_description
+
+        input_text = input_text2
+        return input_text
+
+    def create_description_sometimes2(self, image_list, results_image, position_description=None, caption=False):
+        if position_description is None:
+            input_text = self.create_input_prompt(image_list, caption)
+        else:
+            input_text = self.create_input_prompt2(image_list, caption)
+
+        logger.info("###########################")
+        logger.info(input_text)
+        response = self.generate_response(results_image, input_text)
+        response = response[4:-4]
+
+        return response
+
+
+    def create_description_sometimes3(self, image_list, results_image, caption=False):
+        input_text2 = "# Instructions\n"\
+                    "You are an excellent property writer.\n"\
+                    "The map on the left of the input image is a map of this building, and each picture taken is shown with different RGB values as written in # Picture_Color.\n"\
+                    "Please answer where each picture was taken on the map.\n"\
+                    "\n"
+        input_rgb = "# Picture_Color\n"
+
+        for i in range(self._num_picture):
+            rgb = self.color_list[i]
+            input_rgb += f"[{i}] {rgb}\n"
+
+        input_text = input_text2 + "\n" + input_rgb
+
+        logger.info("###########################")
+        logger.info(input_text)
+        response = self.generate_response(results_image, input_text)
+        response = response[4:-4]
+
+        return response
 
     def generate_response(self, image, input_text):
         if 'llama-2' in self.llava_model_name.lower():
@@ -1266,25 +1712,12 @@ class PPOTrainerO2(BaseRLTrainerOracle):
         return f_score
 
     def get_explored_picture(self, infos):
+        # 探索済みエリアを白、未探索エリアを黒
         explored_map = infos["map"].copy()
         fog_of_war_map = infos["fog_of_war_mask"]
 
         explored_map[(fog_of_war_map == 1) & (explored_map == maps.MAP_VALID_POINT)] = maps.MAP_INVALID_POINT
         explored_map[(fog_of_war_map == 0) & ((explored_map == maps.MAP_VALID_POINT) | (explored_map == maps.MAP_INVALID_POINT))] = maps.MAP_BORDER_INDICATOR
-
-        
-        """
-        y, x = explored_map.shape
-
-        for i in range(y):
-            for j in range(x):
-                if fog_of_war_map[i][j] == 1:
-                    if explored_map[i][j] == maps.MAP_VALID_POINT:
-                        explored_map[i][j] = maps.MAP_INVALID_POINT
-                else:
-                    if explored_map[i][j] in [maps.MAP_VALID_POINT, maps.MAP_INVALID_POINT]:
-                        explored_map[i][j] = maps.MAP_BORDER_INDICATOR 
-        """
 
         return explored_map, fog_of_war_map
 
@@ -1506,7 +1939,6 @@ class PPOTrainerO2(BaseRLTrainerOracle):
             )
             
             reward = []
-            pic_val = []
             picture_value = []
             similarity = []
             pic_sim = []
@@ -1522,7 +1954,6 @@ class PPOTrainerO2(BaseRLTrainerOracle):
             n_envs = self.envs.num_envs
             for n in range(n_envs):
                 reward.append(rewards[n][0])
-                pic_val.append(rewards[n][2])
                 picture_value.append(0)
                 similarity.append(0)
                 pic_sim.append(0)
@@ -1535,7 +1966,7 @@ class PPOTrainerO2(BaseRLTrainerOracle):
                 pas_score.append(0)
                 hes_score.append(0)
                 
-                self._taken_picture_list[n].append([rewards[n][2], observations[n]["rgb"], rewards[n][6], rewards[n][7], infos[n]["explored_map"]])
+                self._taken_picture_list[n].append([rewards[n][2], observations[n]["rgb"], rewards[n][5], rewards[n][6], infos[n]["explored_map"]])
                 
             reward = torch.tensor(reward, dtype=torch.float, device=self.device).unsqueeze(1)
             exp_area = torch.tensor(exp_area, dtype=torch.float, device=self.device).unsqueeze(1)
@@ -1566,11 +1997,15 @@ class PPOTrainerO2(BaseRLTrainerOracle):
                         _episode_id = str(int(_episode_id) + 1)
 
                     # 写真の選別
+                    position_description = []
                     self._taken_picture_list[n], picture_value[n] = self._select_pictures(self._taken_picture_list[n])
                     #self._taken_picture_list[n], picture_value[n] = self._select_random_pictures(self._taken_picture_list[n])
                     #results_image, positions_x, positions_y = self._create_results_image(self._taken_picture_list[n], infos[n]["explored_map"])
-                    results_image, image_list = self._create_results_image2(self._taken_picture_list[n], infos[n]["explored_map"])
-                    
+                    #results_image, image_list = self._create_results_image2(self._taken_picture_list[n])
+                    #results_image, image_list = self._create_results_image3(self._taken_picture_list[n], infos[n]["explored_map"])
+                    results_image, image_list, position_description = self._create_results_image5(self._taken_picture_list[n], infos[n]["explored_map"])
+                    #results_image, image_list, position_description = self._create_results_image6(self._taken_picture_list[n], infos[n]["explored_map"])
+
                     # Ground-Truth descriptionと生成文との類似度の計算 
                     similarity_list = []
                     bleu_list = []
@@ -1584,7 +2019,9 @@ class PPOTrainerO2(BaseRLTrainerOracle):
                     pred_description = ""
                     if results_image is not None:
                         #pred_description = self.create_description_from_results_image(results_image, positions_x, positions_y)
-                        pred_description, image_descriptions = self.create_description_sometimes(image_list, results_image)
+                        #pred_description, image_descriptions = self.create_description_sometimes(image_list, results_image)
+                        pred_description = self.create_description_sometimes2(image_list, results_image, position_description)
+                        #pred_description = self.create_description_sometimes3(image_list, results_image)
                         #logger.info("CAPTION")
                         #pred_description = self.create_description_sometimes(image_list, results_image, caption=True)
                         
@@ -1865,7 +2302,6 @@ class PPOTrainerO2(BaseRLTrainerOracle):
             )
             
             reward = []
-            pic_val = []
             picture_value = []
             similarity = []
             pic_sim = []
@@ -1881,7 +2317,6 @@ class PPOTrainerO2(BaseRLTrainerOracle):
 
             for n in range(n_envs):
                 reward.append(rewards[n][0])
-                pic_val.append(rewards[n][2])
                 picture_value.append(0)
                 similarity.append(0)
                 pic_sim.append(0)
@@ -1894,7 +2329,7 @@ class PPOTrainerO2(BaseRLTrainerOracle):
                 pas_score.append(0)
                 hes_score.append(0)
                 
-                self._taken_picture_list[n].append([rewards[n][2], observations[n]["rgb"], rewards[n][6], rewards[n][7], infos[n]["explored_map"]])
+                self._taken_picture_list[n].append([rewards[n][2], observations[n]["rgb"], rewards[n][5], rewards[n][6], infos[n]["explored_map"]])
                 
             reward = torch.tensor(reward, dtype=torch.float, device=self.device).unsqueeze(1)
             exp_area = torch.tensor(exp_area, dtype=torch.float, device=self.device).unsqueeze(1)
@@ -1931,7 +2366,7 @@ class PPOTrainerO2(BaseRLTrainerOracle):
                     # 写真の選別
                     self._taken_picture_list[n], picture_value[n] = self._select_random_pictures(self._taken_picture_list[n])
                     #results_image, positions_x, positions_y = self._create_results_image(self._taken_picture_list[n], infos[n]["explored_map"])
-                    results_image, image_list = self._create_results_image2(self._taken_picture_list[n], infos[n]["explored_map"])
+                    results_image, image_list = self._create_results_image2(self._taken_picture_list[n])
                         
                     # Ground-Truth descriptionと生成文との類似度の計算 
                     similarity_list = []
@@ -2117,171 +2552,5 @@ class PPOTrainerO2(BaseRLTrainerOracle):
         logger.info("PAS Score: " + str(metrics["pas_score"]))
         logger.info("BLUE: " + str(metrics["bleu_score"]) + ", ROUGE-1: " + str(metrics["rouge_1_score"]) + ", ROUGE-2: " + str(metrics["rouge_2_score"]) + ", ROUGE-L: " + str(metrics["rouge_L_score"]) + ", METEOR: " + str(metrics["meteor_score"]))
         eval_metrics_logger.writeLine(str(step_id)+","+str(metrics["exp_area"])+","+str(metrics["similarity"])+","+str(metrics["picture_value"])+","+str(metrics["pic_sim"])+","+str(metrics["bleu_score"])+","+str(metrics["rouge_1_score"])+","+str(metrics["rouge_2_score"])+","+str(metrics["rouge_L_score"])+","+str(metrics["meteor_score"])+","+str(metrics["pas_score"])+","+str(metrics["hes_score"])+","+str(metrics["raw_metrics.agent_path_length"]))
-
-        self.envs.close()
-
-
-    def collect_images(self, checkpoint_path: str) -> None:
-        logger.info("############### Collect Images ##################")
-        
-        # Map location CPU is almost always better than mapping to a CUDA device.
-        checkpoint_path = "/gs/fs/tga-aklab/matsumoto/Main/cpt/24-10-19 21-11-05/ckpt.206.pth"
-        ckpt_dict = self.load_checkpoint(checkpoint_path, map_location="cpu")
-        logger.info(checkpoint_path)
-
-        if self.config.EVAL.USE_CKPT_CONFIG:
-            config = self._setup_eval_config(ckpt_dict["config"])
-        else:
-            config = self.config.clone()
-
-        ppo_cfg = config.RL.PPO
-
-        config.defrost()
-        config.TASK_CONFIG.DATASET.SPLIT = config.EVAL.SPLIT
-        config.freeze()
-
-        if len(self.config.VIDEO_OPTION) > 0:
-            config.defrost()
-            config.TASK_CONFIG.TASK.MEASUREMENTS.append("TOP_DOWN_MAP")
-            config.TASK_CONFIG.TASK.MEASUREMENTS.append("COLLISIONS")
-            config.freeze()
-
-        logger.info(f"env config: {config}")
-        self.envs = construct_envs(config, get_env_class(config.ENV_NAME))
-        self._setup_actor_critic_agent(ppo_cfg)
-
-        self.agent.load_state_dict(ckpt_dict["state_dict"])
-        self.actor_critic = self.agent.actor_critic
-        
-        # rgb_image, picture_value, depth
-        self.pictures = []
-        for i in range(self.envs.num_envs):
-            self.pictures.append([])
-        
-        observations = self.envs.reset()
-        batch = batch_obs(observations, device=self.device)
-        
-        current_episode_exp_area = torch.zeros(self.envs.num_envs, 1, device=self.device)
-
-        test_recurrent_hidden_states = torch.zeros(
-            self.actor_critic.net.num_recurrent_layers,
-            self.config.NUM_PROCESSES,
-            ppo_cfg.hidden_size,
-            device=self.device,
-        )
-        prev_actions = torch.zeros(self.config.NUM_PROCESSES, 1, device=self.device, dtype=torch.long)
-        not_done_masks = torch.zeros(self.config.NUM_PROCESSES, 1, device=self.device)
-        stats_episodes = dict()  # dict of dicts that stores stats per episode
-        raw_metrics_episodes = dict()
-
-        rgb_frames = [
-            [] for _ in range(self.config.NUM_PROCESSES)
-        ]  # type: List[List[np.ndarray]]
-        
-        pbar = tqdm.tqdm(total=self.config.TEST_EPISODE_COUNT)
-        self.actor_critic.eval()
-        self.step = 0
-        while (
-            len(stats_episodes) < self.config.TEST_EPISODE_COUNT
-            and self.envs.num_envs > 0
-        ):  
-            if (self.step+1) % 100 == 0:
-                logger.info(f"step={self.step+1}")
-            self.step += 1
-            
-            current_episodes = self.envs.current_episodes()
-
-            with torch.no_grad():
-                (
-                    _,
-                    actions,
-                    _,
-                    test_recurrent_hidden_states,
-                ) = self.actor_critic.act(
-                    batch,
-                    test_recurrent_hidden_states,
-                    prev_actions,
-                    not_done_masks,
-                    deterministic=False,
-                )
-
-            outputs = self.envs.step([a[0].item() for a in actions])
- 
-            observations, rewards, dones, infos = [
-                list(x) for x in zip(*outputs)
-            ]
-            batch = batch_obs(observations, device=self.device)
-            
-            not_done_masks = torch.tensor(
-                [[0.0] if done else [1.0] for done in dones],
-                dtype=torch.float,
-                device=self.device,
-            )
-            
-            exp_area = [] # 探索済みのエリア()
-            
-            n_envs = self.envs.num_envs
-            for n in range(n_envs):
-                pic_val = (rewards[n][2])
-                depth_ave = np.mean(observations[n]["depth"])
-                object_num = rewards[n][4]
-                self.pictures[n].append([observations[n]["rgb"], depth_ave, object_num, pic_val])
-                exp_area.append(rewards[n][1])
-
-            exp_area = torch.tensor(exp_area, dtype=torch.float, device=self.device).unsqueeze(1)
-            current_episode_exp_area += exp_area     
-            next_episodes = self.envs.current_episodes()
-
-            for n in range(n_envs):
-                if len(stats_episodes) >= self.config.TEST_EPISODE_COUNT:
-                    break
-
-                # episode ended
-                if not_done_masks[n].item() == 0:
-                    # use scene_id + episode_id as unique id for storing stats
-                    _episode_id = current_episodes[n].episode_id
-                    while (current_episodes[n].scene_id, _episode_id) in stats_episodes:
-                        _episode_id = str(int(_episode_id) + 1)
-
-                    pbar.update()
-                    episode_stats = dict()
-                    episode_stats["exp_area"] = current_episode_exp_area[n].item()
-                    
-                    episode_stats.update(
-                        self._extract_scalars_from_info(infos[n])
-                    )
-
-                    stats_episodes[
-                        (
-                            current_episodes[n].scene_id,
-                            _episode_id,
-                        )
-                    ] = episode_stats
-                    
-                    raw_metrics_episodes[
-                        current_episodes[n].scene_id + '.' + 
-                        _episode_id
-                    ] = infos[n]["raw_metrics"]
-
-                    if len(self.config.VIDEO_OPTION) > 0:
-                        # Save All Picture                        
-                        for j in range(len(self.pictures[n])):
-                            rgb_image = self.pictures[n][j][0]
-                            depth_avg = self.pictures[n][j][1]
-                            obj_num = self.pictures[n][j][2]
-                            pic_value = self.pictures[n][j][3]
-                            scene_name = current_episodes[n].scene_id[-15:-4]
-                            explored_area = current_episode_exp_area[n].item()
-
-                            dir_name = f"/gs/fs/tga-aklab/matsumoto/Main/collected_images/{len(stats_episodes)}"
-                            picture_name = f"{scene_name}_{j}_{depth_avg}_{obj_num}_{pic_value}_{explored_area}"
-                            os.makedirs(dir_name, exist_ok=True)
-                        
-                            picture = Image.fromarray(np.uint8(rgb_image))
-                            file_path = dir_name + "/" + picture_name + ".png"
-                            picture.save(file_path)
-
-                    current_episode_exp_area[n] = 0   
-                    self.pictures[n] = []
 
         self.envs.close()

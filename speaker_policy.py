@@ -160,6 +160,49 @@ def select_pictures(picture_list):
 
     return results
 
+# 画像をCLIPのベクトルに変換
+def image_to_clip_embedding(image_list):
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model, preprocess = clip.load("ViT-B/32", device=device)
+
+    preprocessed_images = torch.stack([preprocess(Image.fromarray(image[1])) for image in image_list]).to(device)
+    with torch.no_grad():
+        embeddings = model.encode_image(preprocessed_images)
+    return embeddings / embeddings.norm(dim=-1, keepdim=True)  # 正規化
+
+def select_similarity_pictures(picture_list):
+    num_images = len(picture_list)
+    all_embeddings = image_to_clip_embedding(picture_list)  # 全埋め込み
+    similarity_matrix = torch.mm(all_embeddings, all_embeddings.T)  # 類似度行列
+
+    results_index = []  # 選択された画像インデックス
+    no_select_pictures = list(range(num_images))  # 未選択画像インデックス
+
+    for _ in range(10):
+        if len(results_index) == 0:
+            sim_results = torch.zeros(len(no_select_pictures), device=device)  # 初期値として0を設定
+        else:
+            # 選択済みと未選択の類似度
+            selected_sim = similarity_matrix[no_select_pictures][:, results_index]
+            sim_results = selected_sim.mean(dim=1)  # 各未選択画像と選択済み画像の平均類似度
+
+        # 未選択画像間の類似度
+        no_select_sim = similarity_matrix[no_select_pictures][:, no_select_pictures].mean(dim=1)
+
+        # x = sim_results - sim_no_selectを計算
+        x_scores = sim_results - no_select_sim
+        min_index = torch.argmin(x_scores).item()
+
+        # 最小の画像を選択
+        selected_index = no_select_pictures.pop(min_index)
+        results_index.append(selected_index)
+
+    results = []
+    for idx in results_index:
+        results.append(picture_list[idx])
+
+    return results
+
 def select_by_depth(picture_list, depth_threshold):
     results = []
     
@@ -447,10 +490,11 @@ if __name__ == "__main__":
     description_dict = create_description_dict()
     scene_object_dict = get_txt2dict("/gs/fs/tga-aklab/matsumoto/Main/scene_object_list.txt")
     selection_method = "Proposed"
-    selection_method = "Depth"
+    selection_method = "Proposed_Similarity"
+    #selection_method = "Depth"
     #selection_method = "Object"
     #selection_method = "Always"
-    selection_method = "Activation"
+    #selection_method = "Activation"
     logger.info(f"Selection: {selection_method}")
 
     similarity_list = []
@@ -458,7 +502,7 @@ if __name__ == "__main__":
     pas_list = []
     ed_list = []
     loq_list = []
-    for i in range(110, 111):
+    for i in range(21, 41):
         dir_name = f"/gs/fs/tga-aklab/matsumoto/Main/collected_images/{i}/"
         picture_list, scene_name = load_images_and_extract_metadata(dir_name)
         #logger.info(f"picture_list = {len(picture_list)}")
@@ -470,6 +514,9 @@ if __name__ == "__main__":
         if selection_method == "Proposed":
             selected_list = select_pictures(picture_list)
             logger.info(f"selected_list = {len(selected_list)}")
+        elif selection_method == "Proposed_Similarity":
+            selected_list = select_similarity_pictures(picture_list)
+            logger.info(f"selected_list = {len(selected_list)}")    
         elif selection_method == "Depth":
             depth_threshold = 3.6
             logger.info(f"Depth >= {depth_threshold}")

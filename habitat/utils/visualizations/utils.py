@@ -337,14 +337,14 @@ def create_each_image(rgb, explored_map, fog_of_war_map, infos, clip_parameter) 
     return frame
 
 
-def explored_to_image(explored_map, info: Dict) -> np.ndarray:
+def explored_to_image(explored_map, explored_info: Dict) -> np.ndarray:
     explored_map = maps.colorize_explored_map(
-        explored_map, info["explored_map"]["fog_of_war_mask"]
+        explored_map, explored_info["fog_of_war_mask"]
     )
-        
+    """
     if explored_map.shape[0] > explored_map.shape[1]:
         explored_map = np.rot90(explored_map, 1)
-
+    """
     return explored_map
 
 
