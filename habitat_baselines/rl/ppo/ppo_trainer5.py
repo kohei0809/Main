@@ -1018,7 +1018,7 @@ class PPOTrainerO5(BaseRLTrainerOracle):
             return True
 
         # 既存の埋め込みと類似度を一括計算
-        all_embs = torch.stack(results_emb)
+        all_embs = torch.stack(results_emb).squeeze()
         similarities = util.pytorch_cos_sim(emd, all_embs).squeeze(0)
 
         # 類似度が閾値以上の場合は保存しない

@@ -1009,7 +1009,7 @@ class PPOTrainerO2(BaseRLTrainerOracle):
             return True
 
         # 既存の埋め込みと類似度を一括計算
-        all_embs = torch.stack(results_emb)
+        all_embs = torch.stack(results_emb).squeeze()
         similarities = util.pytorch_cos_sim(emd, all_embs).squeeze(0)
 
         # 類似度が閾値以上の場合は保存しない
@@ -1338,7 +1338,9 @@ class PPOTrainerO2(BaseRLTrainerOracle):
         position_description = []
         position_text1 = "This picture was taken on the "
         position_text2 = " side of the map."
+        explored_map_clone = np.copy(explored_map)
         for i in range(self._num_picture):
+            explored_map_sub = np.copy(explored_map_clone)
             idx = i%len(picture_list)
             images.append(picture_list[idx][1])
 
@@ -1357,6 +1359,9 @@ class PPOTrainerO2(BaseRLTrainerOracle):
 
             # 各写真の撮影場所をRGB値で指定
             explored_map = self.colorize_picture_position(explored_map, x_coord, y_coord, self.color_list[i])
+            explored_map_sub2 = self.colorize_picture_position(explored_map_sub, x_coord, y_coord, self.color_list[i])
+            map_image = Image.fromarray(explored_map_sub2)
+            map_image.save(f"/gs/fs/tga-aklab/matsumoto/Main/map_each{i}.png")
 
             position_text = position_text1
             size_x, size_y, _ = explored_map.shape
@@ -2003,8 +2008,8 @@ class PPOTrainerO2(BaseRLTrainerOracle):
                     #results_image, positions_x, positions_y = self._create_results_image(self._taken_picture_list[n], infos[n]["explored_map"])
                     #results_image, image_list = self._create_results_image2(self._taken_picture_list[n])
                     #results_image, image_list = self._create_results_image3(self._taken_picture_list[n], infos[n]["explored_map"])
-                    results_image, image_list, position_description = self._create_results_image5(self._taken_picture_list[n], infos[n]["explored_map"])
-                    #results_image, image_list, position_description = self._create_results_image6(self._taken_picture_list[n], infos[n]["explored_map"])
+                    #results_image, image_list, position_description = self._create_results_image5(self._taken_picture_list[n], infos[n]["explored_map"])
+                    results_image, image_list, position_description = self._create_results_image6(self._taken_picture_list[n], infos[n]["explored_map"])
 
                     # Ground-Truth descriptionと生成文との類似度の計算 
                     similarity_list = []

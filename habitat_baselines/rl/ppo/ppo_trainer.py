@@ -985,24 +985,80 @@ class PPOTrainerO(BaseRLTrainerOracle):
 
         return results, res_val
 
-        """
-        i = 0
-        while True:
-            if len(results) == self._num_picture:
-                break
-            if i == len(sorted_picture_list):
-                break
-            emd = self._create_new_image_embedding(sorted_picture_list[i][1])
-            is_save = self._decide_save(emd, results)
+    def select_similarity_pictures(self, taken_picture_list):
+        picture_list = [picture[1] for picture in taken_picture_list]
+        num_images = len(picture_list)
+        all_embeddings = self.image_to_clip_embedding(picture_list)  # 全埋め込み
+        similarity_matrix = torch.mm(all_embeddings, all_embeddings.T)  # 類似度行列
 
-            if is_save == True:
-                results.append(sorted_picture_list[i])
-                res_val += sorted_picture_list[i][0]
-            i += 1
+        results_index = []  # 選択された画像インデックス
+        no_select_pictures = list(range(num_images))  # 未選択画像インデックス
 
-        res_val /= len(results)
-        return results, res_val
-        """
+        for _ in range(self._num_picture):
+            if len(results_index) == 0:
+                sim_results = torch.zeros(len(no_select_pictures), device=self.device)  # 初期値として0を設定
+            else:
+                # 選択済みと未選択の類似度
+                selected_sim = similarity_matrix[no_select_pictures][:, results_index]
+                sim_results = selected_sim.mean(dim=1)  # 各未選択画像と選択済み画像の平均類似度
+
+            # 未選択画像間の類似度
+            no_select_sim = similarity_matrix[no_select_pictures][:, no_select_pictures].mean(dim=1)
+
+            # x = sim_results - sim_no_selectを計算
+            x_scores = sim_results - no_select_sim
+            min_index = torch.argmin(x_scores).item()
+
+            # 最小の画像を選択
+            selected_index = no_select_pictures.pop(min_index)
+            results_index.append(selected_index)
+
+        results = [taken_picture_list[idx] for idx in results_index]
+        return results, 0.0
+
+    # 画像をCLIPのベクトルに変換
+    def image_to_clip_embedding(self, image_list):
+        #logger.info(image_list)
+        #logger.info(image_list[0])
+        preprocessed_images = torch.stack([self.preprocess(Image.fromarray(image)) for image in image_list]).to(self.device)
+        with torch.no_grad():
+            embeddings = self.clip_model.encode_image(preprocessed_images)
+        return embeddings / embeddings.norm(dim=-1, keepdim=True)  # 正規化
+
+    def _select_pictures_mmr(self, taken_picture_list, lambda_param=0.5):
+        picture_list = [picture[1] for picture in taken_picture_list]
+        num_images = len(picture_list)
+        all_embeddings = self.image_to_clip_embedding(picture_list)  # 全埋め込み
+        similarity_matrix = torch.mm(all_embeddings, all_embeddings.T)  # 類似度行列
+
+        results_index = []  # 選択された画像インデックス
+        no_select_pictures = list(range(num_images))  # 未選択画像インデックス
+
+        for _ in range(self._num_picture):
+            scores = []
+            for i in no_select_pictures:
+                if len(results_index) == 0:
+                    relevance_score = similarity_matrix[i].mean().item()  # 初期関連スコア
+                    diversity_score = 0  # 初期多様性スコア
+                else:
+                    # 関連性スコア: 未選択画像iと全体の平均類似度
+                    relevance_score = similarity_matrix[i].mean().item()
+
+                    # 多様性スコア: 未選択画像iと選択済み画像の最大類似度
+                    selected_similarities = similarity_matrix[i, results_index]
+                    diversity_score = selected_similarities.max().item()
+                    
+                # MMRスコアを計算
+                mmr_score = lambda_param * relevance_score - (1 - lambda_param) * diversity_score
+                scores.append((mmr_score, i))
+
+            # 最も高いMMRスコアを持つ画像を選択
+            selected_index = max(scores, key=lambda x: x[0])[1]
+            no_select_pictures.remove(selected_index)
+            results_index.append(selected_index)
+
+        results = [taken_picture_list[idx] for idx in results_index]
+        return results, 0.0
 
     def _select_random_pictures(self, taken_picture_list):
         results = taken_picture_list
@@ -1017,30 +1073,18 @@ class PPOTrainerO(BaseRLTrainerOracle):
 
         return results, res_val
 
-
     def _decide_save(self, emd, results_emb):
         if not results_emb:
             return True
 
         # 既存の埋め込みと類似度を一括計算
-        all_embs = torch.stack(results_emb)
+        all_embs = torch.stack(results_emb).squeeze()
         similarities = util.pytorch_cos_sim(emd, all_embs).squeeze(0)
 
         # 類似度が閾値以上の場合は保存しない
         if torch.any(similarities >= self._select_threthould):
             return False
         return True
-        
-        """
-        for i in range(len(results)):
-            check_emb = self._create_new_image_embedding(results[i][1])
-
-            sim = util.pytorch_cos_sim(emd, check_emb).item()
-            if sim >= self._select_threthould:
-                return False
-        return True
-        """
-
 
     def _create_results_image(self, picture_list, infos):
         images = []
@@ -1649,7 +1693,7 @@ class PPOTrainerO(BaseRLTrainerOracle):
                 pas_score.append(0)
                 hes_score.append(0)
                 
-                self._taken_picture_list[n].append([rewards[n][2], observations[n]["rgb"], rewards[n][6], rewards[n][7], infos[n]["explored_map"]])
+                self._taken_picture_list[n].append([rewards[n][2], observations[n]["rgb"], rewards[n][5], rewards[n][6], infos[n]["explored_map"]])
                 
             reward = torch.tensor(reward, dtype=torch.float, device=self.device).unsqueeze(1)
             exp_area = torch.tensor(exp_area, dtype=torch.float, device=self.device).unsqueeze(1)
@@ -1680,7 +1724,9 @@ class PPOTrainerO(BaseRLTrainerOracle):
                         _episode_id = str(int(_episode_id) + 1)
 
                     # 写真の選別
-                    self._taken_picture_list[n], picture_value[n] = self._select_pictures(self._taken_picture_list[n])
+                    #self._taken_picture_list[n], picture_value[n] = self._select_pictures(self._taken_picture_list[n])
+                    self._taken_picture_list[n], picture_value[n] = self._select_pictures_mmr(self._taken_picture_list[n])
+                    #self._taken_picture_list[n], picture_value[n] = self.select_similarity_pictures(self._taken_picture_list[n])
                     #self._taken_picture_list[n], picture_value[n] = self._select_random_pictures(self._taken_picture_list[n])
                     #results_image, positions_x, positions_y = self._create_results_image(self._taken_picture_list[n], infos[n]["explored_map"])
                     results_image, image_list = self._create_results_image2(self._taken_picture_list[n], infos[n]["explored_map"])

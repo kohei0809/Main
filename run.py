@@ -140,8 +140,8 @@ def test(run_type: str, area_reward_type: str, opts=None):
         config.defrost()
         config.RL.PPO.num_mini_batch = 4
         config.NUM_PROCESSES = 28
-        config.RL.PPO.num_mini_batch = 1
-        config.NUM_PROCESSES = 1
+        #config.RL.PPO.num_mini_batch = 1
+        #config.NUM_PROCESSES = 1
         #config.TEST_EPISODE_COUNT = 220
         config.TEST_EPISODE_COUNT = 110
         config.VIDEO_OPTION = ["disk"]

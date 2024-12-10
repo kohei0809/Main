@@ -171,6 +171,7 @@ def image_to_clip_embedding(image_list):
     return embeddings / embeddings.norm(dim=-1, keepdim=True)  # 正規化
 
 def select_similarity_pictures(picture_list):
+    select_num = 5
     num_images = len(picture_list)
     all_embeddings = image_to_clip_embedding(picture_list)  # 全埋め込み
     similarity_matrix = torch.mm(all_embeddings, all_embeddings.T)  # 類似度行列
@@ -178,7 +179,7 @@ def select_similarity_pictures(picture_list):
     results_index = []  # 選択された画像インデックス
     no_select_pictures = list(range(num_images))  # 未選択画像インデックス
 
-    for _ in range(10):
+    for _ in range(select_num):
         if len(results_index) == 0:
             sim_results = torch.zeros(len(no_select_pictures), device=device)  # 初期値として0を設定
         else:
@@ -201,6 +202,41 @@ def select_similarity_pictures(picture_list):
     for idx in results_index:
         results.append(picture_list[idx])
 
+    return results
+
+def mmr(picture_list, lambda_param=0.5):
+    select_num = 100
+    num_images = len(picture_list)
+    all_embeddings = image_to_clip_embedding(picture_list)  # 全埋め込み
+    similarity_matrix = torch.mm(all_embeddings, all_embeddings.T)  # 類似度行列
+
+    results_index = []  # 選択された画像インデックス
+    no_select_pictures = list(range(num_images))  # 未選択画像インデックス
+
+    for _ in range(select_num):
+        scores = []
+        for i in no_select_pictures:
+            if len(results_index) == 0:
+                relevance_score = similarity_matrix[i].mean().item()  # 初期関連スコア
+                diversity_score = 0  # 初期多様性スコア
+            else:
+                # 関連性スコア: 未選択画像iと全体の平均類似度
+                relevance_score = similarity_matrix[i].mean().item()
+
+                # 多様性スコア: 未選択画像iと選択済み画像の最大類似度
+                selected_similarities = similarity_matrix[i, results_index]
+                diversity_score = selected_similarities.max().item()
+                
+            # MMRスコアを計算
+            mmr_score = lambda_param * relevance_score - (1 - lambda_param) * diversity_score
+            scores.append((mmr_score, i))
+
+        # 最も高いMMRスコアを持つ画像を選択
+        selected_index = max(scores, key=lambda x: x[0])[1]
+        no_select_pictures.remove(selected_index)
+        results_index.append(selected_index)
+
+    results = [picture_list[idx] for idx in results_index]
     return results
 
 def select_by_depth(picture_list, depth_threshold):
@@ -491,6 +527,7 @@ if __name__ == "__main__":
     scene_object_dict = get_txt2dict("/gs/fs/tga-aklab/matsumoto/Main/scene_object_list.txt")
     selection_method = "Proposed"
     selection_method = "Proposed_Similarity"
+    selection_method = "MMR"
     #selection_method = "Depth"
     #selection_method = "Object"
     #selection_method = "Always"
@@ -502,7 +539,7 @@ if __name__ == "__main__":
     pas_list = []
     ed_list = []
     loq_list = []
-    for i in range(21, 41):
+    for i in range(1, 111):
         dir_name = f"/gs/fs/tga-aklab/matsumoto/Main/collected_images/{i}/"
         picture_list, scene_name = load_images_and_extract_metadata(dir_name)
         #logger.info(f"picture_list = {len(picture_list)}")
@@ -516,6 +553,9 @@ if __name__ == "__main__":
             logger.info(f"selected_list = {len(selected_list)}")
         elif selection_method == "Proposed_Similarity":
             selected_list = select_similarity_pictures(picture_list)
+            logger.info(f"selected_list = {len(selected_list)}") 
+        elif selection_method == "MMR":
+            selected_list = mmr(picture_list)
             logger.info(f"selected_list = {len(selected_list)}")    
         elif selection_method == "Depth":
             depth_threshold = 3.6
@@ -591,6 +631,7 @@ if __name__ == "__main__":
     similarity_score = sum(similarity_list) / len(similarity_list)
     pas_score = sum(pas_list) / len(pas_list)
     hes_score = sum(hes_list) / len(hes_list)
+    hes_score = (hes_score-1) / 4
     ed_score = sum(ed_list) / len(ed_list)
     loq_score = sum(loq_list) / len(loq_list)
 

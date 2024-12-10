@@ -4,10 +4,11 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-# ある程度多くの写真を探索中は保持し、探索終了後に取捨選択する 
+# Similarityではなく、HES Scoreを報酬として与える
 
 import os
 import time
+import datetime
 from collections import defaultdict, deque
 from typing import Any, Dict, List, Optional
 from PIL import Image, ImageDraw
@@ -21,7 +22,7 @@ import torch
 import torch.nn as nn
 import tqdm
 from torch.optim.lr_scheduler import LambdaLR
-from functools import lru_cache
+from scipy.optimize import linear_sum_assignment
 
 import clip
 from sentence_transformers import SentenceTransformer, util
@@ -51,6 +52,7 @@ from llava.model.builder import load_pretrained_model
 from llava.utils import disable_torch_init
 from llava.mm_utils import tokenizer_image_token, get_model_name_from_path
 from transformers import TextStreamer
+#from transformers import AutoProcessor, LlavaNextForConditionalGeneration 
 
 import nltk
 from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
@@ -128,11 +130,13 @@ class PPOTrainerO3(BaseRLTrainerOracle):
         
         # Sentence-BERTモデルの読み込み
         self.bert_model = SentenceTransformer('all-MiniLM-L6-v2')
-        
-        # lavisモデルの読み込み
-        #self.lavis_model, self.vis_processors, _ = load_model_and_preprocess(name="blip_caption", model_type="base_coco", is_eval=True, device=self.device)
         self.bert_model.to(self.device)
-        #self.lavis_model.to(self.device)
+
+        """
+        # lavisモデルの読み込み
+        self.lavis_model, self.vis_processors, _ = load_model_and_preprocess(name="blip_caption", model_type="base_coco", is_eval=True, device=self.device)
+        self.lavis_model.to(self.device)
+        """
 
         # Load the clip model
         self.clip_model, self.preprocess = clip.load('ViT-B/32', self.device)
@@ -140,13 +144,23 @@ class PPOTrainerO3(BaseRLTrainerOracle):
         #self._select_threthould = 0.8
 
         # LLaVA model
+
         load_4bit = True
         load_8bit = not load_4bit
         disable_torch_init()
         model_path = "liuhaotian/llava-v1.5-13b"
         self.llava_model_name = get_model_name_from_path(model_path)
         self.tokenizer, self.llava_model, self.llava_image_processor, _ = load_pretrained_model(model_path, None, self.llava_model_name, load_8bit, load_4bit)
-        
+
+        """
+        # LLaVA NEXT model
+        #model_path = "llava-hf/llava-v1.6-mistral-7b-hf"
+        model_path = "llava-hf/llava-v1.6-vicuna-13b-hf"
+        # Load the model in half-precision
+        self.llava_model = LlavaNextForConditionalGeneration.from_pretrained(model_path, torch_dtype=torch.float16, device_map="auto")
+        self.llava_processor = AutoProcessor.from_pretrained(model_path)
+        """
+
         # ファイルを読み込んで行ごとにリストに格納する
         with open('data/scene_datasets/mp3d/Environment_Descriptions.txt', 'r') as file:
             lines = [line.strip() for line in file]
@@ -171,6 +185,8 @@ class PPOTrainerO3(BaseRLTrainerOracle):
             for i in range(0, len(lines), 7)
         }
 
+        self.scene_object_dict = self.get_txt2dict("/gs/fs/tga-aklab/matsumoto/Main/scene_object_list.txt")
+
         model_path = f"/gs/fs/tga-aklab/matsumoto/Main/SentenceBert_FineTuning/model_checkpoints_all/model_epoch_10000.pth"
         # SBERTモデルのロード
         sbert_model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
@@ -182,6 +198,19 @@ class PPOTrainerO3(BaseRLTrainerOracle):
         # 単語のステミング処理
         self.lemmatizer = WordNetLemmatizer()
 
+    def get_txt2dict(self, txt_path):
+        data_dict = {}
+        # ファイルを読み込み、行ごとにリストに格納
+        with open(txt_path, 'r') as file:
+            lines = file.readlines()
+
+        # 奇数行目をキー、偶数行目を値として辞書に格納
+        for i in range(0, len(lines), 2):
+            scene_name = lines[i].strip()  # 奇数行目: scene名
+            scene_data = lines[i + 1].strip().split(',')  # 偶数行目: コンマ区切りのデータ
+            data_dict[scene_name] = scene_data
+            
+        return data_dict
 
     def _setup_actor_critic_agent(self, ppo_cfg: Config) -> None:
         r"""Sets up actor critic and agent for PPO.
@@ -325,6 +354,7 @@ class PPOTrainerO3(BaseRLTrainerOracle):
         return sentence_sim
 
     def _calculate_pic_sim(self, picture_list):
+        return 0.0
         if len(picture_list) <= 1:
             return 0.0
 
@@ -386,26 +416,6 @@ class PPOTrainerO3(BaseRLTrainerOracle):
                     r += self.each_subgoal_reward
                     self.subgoal_num_list[n][i] += 1
 
-        """
-        subgoal_num = []
-        for i in range(len(self.subgoal_list[n])):
-            subgoal_num.append(0)
-        if len(subgoal_num) == 0:
-            return r
-
-        for i in range(H):
-            for j in range(W):
-                obs = semantic_obs[i][j]
-                if obs in self.subgoal_list[n]:
-                    subgoal_num[self.subgoal_list[n].index(obs)] += 1
-
-        for i in range(len(self.subgoal_list[n])):
-            if subgoal_num[i] > threshold:
-                if self.subgoal_num_list[n][i] < self.threshold_subgoal:
-                    r += self.each_subgoal_reward
-                    self.subgoal_num_list[n][i] += 1
-        """
-
         return r
 
                 
@@ -453,7 +463,6 @@ class PPOTrainerO3(BaseRLTrainerOracle):
 
         t_step_env = time.time()
 
-        #logger.info("actions=" + str(actions))
         outputs = self.envs.step([a[0].item() for a in actions])
         observations, rewards, dones, infos = [list(x) for x in zip(*outputs)]
 
@@ -463,7 +472,6 @@ class PPOTrainerO3(BaseRLTrainerOracle):
         batch = batch_obs(observations, device=self.device)
         
         reward = []
-        pic_val = []
         picture_value = []
         similarity = []
         pic_sim = []
@@ -480,7 +488,6 @@ class PPOTrainerO3(BaseRLTrainerOracle):
         n_envs = self.envs.num_envs
         for n in range(n_envs):
             reward.append(rewards[n][0])
-            pic_val.append(rewards[n][2])
             picture_value.append(0)
             similarity.append(0)
             pic_sim.append(0)
@@ -498,12 +505,11 @@ class PPOTrainerO3(BaseRLTrainerOracle):
         current_episodes = self.envs.current_episodes()
         for n in range(len(observations)):
             if len(self._taken_picture_list[n]) == 0:
-                self._load_subgoal_list(current_episodes, n, rewards[n][5])
+                self._load_subgoal_list(current_episodes, n, rewards[n][4])
             
-            self._taken_picture_list[n].append([pic_val[n], observations[n]["rgb"], rewards[n][6], rewards[n][7], infos[n]["explored_map"]])
+            self._taken_picture_list[n].append([rewards[n][2], observations[n]["rgb"], rewards[n][5], rewards[n][6], infos[n]["explored_map"]])
                 
             subgoal_reward[n] = self._calculate_subgoal_reward(semantic_obs[n], n)
-            #logger.info("########## subgoal_reward: " + str(subgoal_reward[n]))
             reward[n] += subgoal_reward[n]
 
         reward = torch.tensor(reward, dtype=torch.float, device=self.device).unsqueeze(1)
@@ -547,7 +553,9 @@ class PPOTrainerO3(BaseRLTrainerOracle):
                 pred_description = ""
                 if results_image is not None:
                     #pred_description = self.create_description_from_results_image(results_image, positions_x, positions_y)
-                    pred_description = self.create_description_sometimes(image_list, results_image)
+                    pred_description, image_descriptions = self.create_description_sometimes(image_list, results_image)
+                    #pred_description = self.create_description_multi(image_list, results_image)
+
                 
                 s_lemmatized = self.lemmatize_and_filter(pred_description) 
                 description_list = self.description_dict[current_episodes[n].scene_id[-15:-4]]
@@ -585,7 +593,9 @@ class PPOTrainerO3(BaseRLTrainerOracle):
                 pas_score[n] = sum(pas_list) / len(pas_list)    
                 hes_score[n] = self.eval_model(hes_sentence_list).item()
 
-                reward[n] += similarity[n]*10
+                #reward[n] += similarity[n]*10
+                #reward[n] += hes_score[n]*0.5
+                reward[n] += hes_score[n]*2
     
                 self._taken_picture_list[n] = []
                 
@@ -695,7 +705,7 @@ class PPOTrainerO3(BaseRLTrainerOracle):
         Returns:
             None
         """
-        logger.info("########### PPO3 ##############")
+        logger.info("########### PPO ##############")
 
         self.log_manager = log_manager
         
@@ -739,7 +749,6 @@ class PPOTrainerO3(BaseRLTrainerOracle):
         )
 
         ################
-        #heckpoint_path = "/gs/fs/tga-aklab/matsumoto/Main/cpt/24-06-28 04-00-29/ckpt.44.pth"
         #checkpoint_path = "/gs/fs/tga-aklab/matsumoto/Main/cpt/24-06-28 04-51-59/ckpt.48.pth"
         #ckpt_dict = self.load_checkpoint(checkpoint_path, map_location="cpu")
         #self.agent.load_state_dict(ckpt_dict["state_dict"])
@@ -910,8 +919,6 @@ class PPOTrainerO3(BaseRLTrainerOracle):
                 logger.info("HES Score: " + str(metrics["hes_score"]))
                 logger.info("PAS Score: " + str(metrics["pas_score"]))
                 logger.info("Similarity: " + str(metrics["similarity"]))
-                #logger.info("Picture Value: " + str(metrics["picture_value"]))
-                #logger.info("Pic_Sim: " + str(metrics["pic_sim"]))
                 logger.info("SubGoal_Reward: " + str(metrics["subgoal_reward"]))
                 logger.info("BLUE: " + str(metrics["bleu_score"]) + ", ROUGE-1: " + str(metrics["rouge_1_score"]) + ", ROUGE-2: " + str(metrics["rouge_2_score"]) + ", ROUGE-L: " + str(metrics["rouge_L_score"]) + ", METEOR: " + str(metrics["meteor_score"]))
                 logger.info("REWARD: " + str(deltas["reward"] / deltas["count"]))
@@ -958,95 +965,100 @@ class PPOTrainerO3(BaseRLTrainerOracle):
 
     def _select_pictures(self, taken_picture_list):
         results = []
+        results_emb = []  # 埋め込みキャッシュ
         res_val = 0.0
 
         sorted_picture_list = sorted(taken_picture_list, key=lambda x: x[0], reverse=True)
-        i = 0
-        while True:
+        
+        for item in sorted_picture_list:
             if len(results) == self._num_picture:
                 break
-            if i == len(sorted_picture_list):
-                break
-            emd = self._create_new_image_embedding(sorted_picture_list[i][1])
-            is_save = self._decide_save(emd, results)
 
-            if is_save == True:
-                results.append(sorted_picture_list[i])
-                res_val += sorted_picture_list[i][0]
-            i += 1
+            # 埋め込みを生成
+            emd = self._create_new_image_embedding(item[1])
 
-        res_val /= len(results)
+            # 保存するか判定
+            if self._decide_save(emd, results_emb):
+                results.append(item)
+                results_emb.append(emd)  # 埋め込みをキャッシュ
+                res_val += item[0]
+
         return results, res_val
 
-    def _select_pictures2(self, taken_picture_list):
-        n = len(taken_picture_list)
-        select_list = []
-        noselect_list = [i for i in range(n)]
+    def select_similarity_pictures(self, taken_picture_list):
+        picture_list = [picture[1] for picture in taken_picture_list]
+        num_images = len(picture_list)
+        all_embeddings = self.image_to_clip_embedding(picture_list)  # 全埋め込み
+        similarity_matrix = torch.mm(all_embeddings, all_embeddings.T)  # 類似度行列
 
-        # 類似度行列を作成
-        #similarity_matrix = self.create_similarity_matrix(taken_picture_list)
+        results_index = []  # 選択された画像インデックス
+        no_select_pictures = list(range(num_images))  # 未選択画像インデックス
 
-        while len(select_list) < self._num_picture:
-            max_value = float('-inf')
-            best_picture = None
+        for _ in range(self._num_picture):
+            if len(results_index) == 0:
+                sim_results = torch.zeros(len(no_select_pictures), device=self.device)  # 初期値として0を設定
+            else:
+                # 選択済みと未選択の類似度
+                selected_sim = similarity_matrix[no_select_pictures][:, results_index]
+                sim_results = selected_sim.mean(dim=1)  # 各未選択画像と選択済み画像の平均類似度
 
-            for i in noselect_list:
-                # select_listに入っている写真との平均類似度を計算
-                #select_sim= self.calculate_avg_similarity(i, select_list, similarity_matrix)
-                select_sim= self.calculate_avg_similarity(i, select_list, taken_picture_list)
+            # 未選択画像間の類似度
+            no_select_sim = similarity_matrix[no_select_pictures][:, no_select_pictures].mean(dim=1)
 
-                # select_listに入っていない写真との平均類似度を計算
-                #noselect_sim = self.calculate_avg_similarity(i, noselect_list, similarity_matrix)
-                noselect_sim = self.calculate_avg_similarity(i, noselect_list, taken_picture_list)
+            # x = sim_results - sim_no_selectを計算
+            x_scores = sim_results - no_select_sim
+            min_index = torch.argmin(x_scores).item()
 
-                # (noselect_sim - select_sim) を計算
-                value = noselect_sim - select_sim
+            # 最小の画像を選択
+            selected_index = no_select_pictures.pop(min_index)
+            results_index.append(selected_index)
 
-                # 最大のvalueを持つ写真を探す
-                if value > max_value:
-                    max_value = value
-                    best_picture = i
+        results = [taken_picture_list[idx] for idx in results_index]
+        return results, 0.0
 
-            # 選ばれた写真をselect_listに追加し、noselect_listから削除
-            if best_picture is not None:
-                select_list.append(best_picture)
-                noselect_list.remove(best_picture)
+    # 画像をCLIPのベクトルに変換
+    def image_to_clip_embedding(self, image_list):
+        #logger.info(image_list)
+        #logger.info(image_list[0])
+        preprocessed_images = torch.stack([self.preprocess(Image.fromarray(image)) for image in image_list]).to(self.device)
+        with torch.no_grad():
+            embeddings = self.clip_model.encode_image(preprocessed_images)
+        return embeddings / embeddings.norm(dim=-1, keepdim=True)  # 正規化
 
-        # 選ばれたインデックスを元の写真に変換して返す
-        selected_pictures = [taken_picture_list[i] for i in select_list]
-        return selected_pictures, 0.0
+    def _select_pictures_mmr(self, taken_picture_list, lambda_param=0.5):
+        picture_list = [picture[1] for picture in taken_picture_list]
+        num_images = len(picture_list)
+        all_embeddings = self.image_to_clip_embedding(picture_list)  # 全埋め込み
+        similarity_matrix = torch.mm(all_embeddings, all_embeddings.T)  # 類似度行列
 
-    def create_similarity_matrix(self, picture_list):
-        n = len(picture_list)
-        similarity_matrix = np.zeros((n, n))
+        results_index = []  # 選択された画像インデックス
+        no_select_pictures = list(range(num_images))  # 未選択画像インデックス
 
-        # 各ペア間の類似度を計算し、行列に保存
-        for i in range(n):
-            for j in range(i+1, n):
-                emd_i = self._create_new_image_embedding(picture_list[i][1])
-                emd_j = self._create_new_image_embedding(picture_list[j][1])
-                sim = util.pytorch_cos_sim(emd_i, emd_j).item()
+        for _ in range(self._num_picture):
+            scores = []
+            for i in no_select_pictures:
+                if len(results_index) == 0:
+                    relevance_score = similarity_matrix[i].mean().item()  # 初期関連スコア
+                    diversity_score = 0  # 初期多様性スコア
+                else:
+                    # 関連性スコア: 未選択画像iと全体の平均類似度
+                    relevance_score = similarity_matrix[i].mean().item()
 
-                similarity_matrix[i][j] = sim
-                similarity_matrix[j][i] = sim
+                    # 多様性スコア: 未選択画像iと選択済み画像の最大類似度
+                    selected_similarities = similarity_matrix[i, results_index]
+                    diversity_score = selected_similarities.max().item()
+                    
+                # MMRスコアを計算
+                mmr_score = lambda_param * relevance_score - (1 - lambda_param) * diversity_score
+                scores.append((mmr_score, i))
 
-        return similarity_matrix
+            # 最も高いMMRスコアを持つ画像を選択
+            selected_index = max(scores, key=lambda x: x[0])[1]
+            no_select_pictures.remove(selected_index)
+            results_index.append(selected_index)
 
-    # select_listに入っている写真と入っていない写真との平均類似度の計算
-    def calculate_avg_similarity(self, index, indices, picture_list, similarity_matrix=None):
-        if not indices:
-            return 0
-        #return np.mean([similarity_matrix[index, i] for i in indices])
-        similarity_sum = sum(self.cal_similarity(index, i, picture_list[index][i], picture_list[i][1]) for i in indices)
-        return similarity_sum / len(indices)
-
-    # 類似度を逐次計算し、キャッシュする関数
-    #@lru_cache(maxsize=1000)  # キャッシュサイズを1000ペアに制限
-    def cal_similarity(self, index, i, picture1, picture2):
-        emd_index = self._create_new_image_embedding(picture1)
-        emd_i = self._create_new_image_embedding(picture2)
-        sim = util.pytorch_cos_sim(emd_index, emd_i).item()
-        return sim
+        results = [taken_picture_list[idx] for idx in results_index]
+        return results, 0.0
 
     def _select_random_pictures(self, taken_picture_list):
         results = taken_picture_list
@@ -1061,15 +1073,18 @@ class PPOTrainerO3(BaseRLTrainerOracle):
 
         return results, res_val
 
-    def _decide_save(self, emd, results):
-        for i in range(len(results)):
-            check_emb = self._create_new_image_embedding(results[i][1])
+    def _decide_save(self, emd, results_emb):
+        if not results_emb:
+            return True
 
-            sim = util.pytorch_cos_sim(emd, check_emb).item()
-            if sim >= self._select_threthould:
-                return False
+        # 既存の埋め込みと類似度を一括計算
+        all_embs = torch.stack(results_emb).squeeze()
+        similarities = util.pytorch_cos_sim(emd, all_embs).squeeze(0)
+
+        # 類似度が閾値以上の場合は保存しない
+        if torch.any(similarities >= self._select_threthould):
+            return False
         return True
-
 
     def _create_results_image(self, picture_list, infos):
         images = []
@@ -1171,15 +1186,18 @@ class PPOTrainerO3(BaseRLTrainerOracle):
         response = response[4:-4]
         return response
 
-    def create_description_sometimes(self, image_list, results_image):
+    def create_description_sometimes(self, image_list, results_image, caption=False):
         input_text1 = "# Instructions\n"\
                     "You are an excellent property writer.\n"\
                     "Please understand the details of the environment of this building from the pictures you have been given and explain what it is like to be in this environment as a person in this environment."
 
         image_descriptions = []
         for image in image_list:
-            response = self.generate_response(image, input_text1)
-            response = response[4:-4]
+            if caption == True:
+                response = self._create_caption(image)
+            else:
+                response = self.generate_response(image, input_text1)
+                response = response[4:-4]
             image_descriptions.append(response)
 
         input_text2 = "# Instructions\n"\
@@ -1198,15 +1216,10 @@ class PPOTrainerO3(BaseRLTrainerOracle):
 
         input_text = input_text2 + "\n" + input_text3
 
-        #logger.info("############## input_text ###############")
-        #logger.info(input_text)
-        
         response = self.generate_response(results_image, input_text)
         response = response[4:-4]
 
-        #logger.info("########### output_text ################")
-        #logger.info(response)
-        return response
+        return response, image_descriptions
 
     def generate_response(self, image, input_text):
         if 'llama-2' in self.llava_model_name.lower():
@@ -1259,6 +1272,77 @@ class PPOTrainerO3(BaseRLTrainerOracle):
         outputs = outputs.replace("\n\n", " ")
         return outputs
 
+    def extract_after_inst(self, S: str) -> str:
+        # '[/INST]' が見つかった場所を特定する
+        inst_index = S.find('[/INST]')
+        
+        # '[/INST]' が見つかった場合、その後の文章を返す
+        if inst_index != -1:
+            return S[inst_index + len('[/INST]'):]
+        
+        # 見つからなかった場合は空の文字列を返す
+        return ""
+
+    def create_description_multi(self, image_list, results_image):
+        input_text1 = "# Instructions\n"\
+                    "You are an excellent property writer.\n"\
+                    "Please understand the details of the environment of this building from the pictures you have been given and explain what it is like to be in this environment as a person in this environment."
+
+        image_descriptions = []
+        response = self.generate_multi_response(image_list, input_text1)
+        for i in range(len(image_list)):
+            output = self.extract_after_inst(response[i].strip().replace("\n\n", " "))
+            image_descriptions.append(output)
+            #logger.info(f"desc {i}")
+            #logger.info(output)
+
+        input_text2 = "# Instructions\n"\
+                    "You are an excellent property writer.\n"\
+                    "# Each_Description is a description of the building in the pictures you have entered. Please summarize these and write a description of the entire environment as if you were a person in this environment.\n"\
+                    "\n"\
+                    "# Each_Description\n"
+        input_text3 = "# Notes\n"\
+                    "・Please summarize # Each_Description and write a description of the entire environment as if you were a person in this environment.\n"\
+                    "・Please write approximately 100 words.\n"\
+                    "・Please note that the sentences in # Each_Description are not necessarily close in distance."
+
+        for description in image_descriptions:
+            each_description = "・" + description + "\n"
+            input_text2 += each_description
+
+        input_text = input_text2 + "\n" + input_text3
+
+        response = self.generate_multi_response([results_image], input_text)
+        response = self.extract_after_inst(response[0].strip().replace("\n\n", " "))
+        #logger.info(f"response: ")
+        #logger.info(response)
+
+        return response
+
+    def generate_multi_response(self, image_list, input_text):
+        conversation = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image"},
+                    {"type": "text", "text": input_text},
+                    ],
+            },
+        ]
+
+        prompt = self.llava_processor.apply_chat_template(conversation, add_generation_prompt=True)
+        prompts = [prompt for _ in range(len(image_list))]
+        
+        inputs = self.llava_processor(images=image_list, text=prompts, padding=True, return_tensors="pt").to(self.llava_model.device)
+
+        generate_ids = self.llava_model.generate(**inputs, max_new_tokens=2048)
+        outputs = self.llava_processor.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)
+
+        #logger.info(f"device = {self.llava_model.device}")
+        #logger.info(f"outputs_size = {len(outputs)}")
+        #logger.info(f"image_list_size = {len(image_list)}")
+
+        return outputs 
 
     # BLEUスコアの計算
     def calculate_bleu(self, reference, candidate):
@@ -1364,8 +1448,107 @@ class PPOTrainerO3(BaseRLTrainerOracle):
 
         return explored_map, fog_of_war_map
 
+    # sentence内の名詞のリストを取得
+    def extract_nouns(self, sentence):
+        tokens = word_tokenize(sentence)
+        nouns = []
+
+        for word in tokens:
+            if word.isalpha() and word not in stopwords.words('english'):
+                # 原型に変換
+                lemma = self.lemmatizer.lemmatize(word)
+                pos = self.get_wordnet_pos(word)
+                if pos == wordnet.NOUN and self.is_valid_noun(lemma):  # 名詞に限定
+                    if lemma not in nouns:
+                        nouns.append(lemma)
+
+        return nouns
+
+    # 名詞であるかどうかを判断するための追加のフィルター
+    def is_valid_noun(self, word):
+        """単語が名詞であるかを確認する追加のフィルター"""
+        # 除外したい名詞のリスト
+        excluded_nouns = {"inside", "lead", "use", "look", "like", "lot", "clean", "middle", "walk", "gray"}
+
+        if word in excluded_nouns:
+            return False
+        synsets = wordnet.synsets(word)
+        return any(s.pos() == 'n' for s in synsets)
+
+    def calculate_clip_score(self, image, text):
+        # 画像の読み込み
+        image = Image.fromarray(image)
+        
+        # 画像の前処理
+        inputs = self.preprocess(image).unsqueeze(0).to(self.device)
+
+        # テキストのトークン化とエンコード
+
+        text_tokens = clip.tokenize([text], context_length=1000).to(self.device)
+
+        # 画像とテキストの特徴ベクトルを計算
+        with torch.no_grad():
+            image_features = self.clip_model.encode_image(inputs)
+            text_features = self.clip_model.encode_text(text_tokens)
+
+        # 類似度（cosine similarity）を計算
+        clip_score = torch.cosine_similarity(image_features, text_features)
+        
+        return clip_score.item()
+
+    def calculate_iou(self, word1, word2):
+        # word1, word2 の同義語集合を取得し、それらのJaccard係数を用いてIoU計算を行います。
+        synsets1 = set(wordnet.synsets(word1))
+        synsets2 = set(wordnet.synsets(word2))
+        intersection = synsets1.intersection(synsets2)
+        union = synsets1.union(synsets2)
+        if not union:  # 同義語が全くない場合は0を返す
+            return 0.0
+        return len(intersection) / len(union)
+
+    # IoU行列の生成
+    def generate_iou_matrix(self, object_list1, object_list2):
+        iou_matrix = np.zeros((len(object_list1), len(object_list2)))
+        for i, obj1 in enumerate(object_list1):
+            for j, obj2 in enumerate(object_list2):
+                iou_matrix[i, j] = self.calculate_iou(obj1, obj2)
+        return iou_matrix
+
+    # Jonker-Volgenantアルゴリズム（線形代入問題の解法）で最適な対応を見つける
+    def find_optimal_assignment(self, object_list1, object_list2):
+        iou_matrix = self.generate_iou_matrix(object_list1, object_list2)
+        # コスト行列はIoUの負の値を使う（最小コストの最大化）
+        cost_matrix = -iou_matrix
+        row_ind, col_ind = linear_sum_assignment(cost_matrix)
+        optimal_iou = iou_matrix[row_ind, col_ind].sum() / min(len(object_list1), len(object_list2))
+        return optimal_iou, list(zip(row_ind, col_ind))
+
+    def calculate_ed(self, object_list, pred_sentence, area, picture_list, image_descriptions):
+        """
+        #CLIP Scoreの平均の計算
+        clip_score_list = []
+        for i in range(len(picture_list)):
+            pic_list = picture_list[i]
+            clip_score_list.append(self.calculate_clip_score(pic_list[1], image_descriptions[i]))
+        """
+
+        pred_object_list = self.extract_nouns(pred_sentence)
+
+        if len(pred_object_list) == 0:
+            logger.info(f"len(pred_object_list)=0")
+            return 0.0
+            
+        optimal_iou, assignment = self.find_optimal_assignment(object_list, pred_object_list)
+
+        #ed_score = clip_score * optimal_iou * area
+        ed_score = optimal_iou * area
+        #logger.info(f"ED-S: {ed_score}, CLIP Score: {clip_score}, IoU: {optimal_iou}, Area: {area}")
+        logger.info(f"ED-S: {ed_score}, IoU: {optimal_iou}, Area: {area}")
+
+        return ed_score
+
     def _eval_checkpoint(self, checkpoint_path: str, log_manager: LogManager, date: str, checkpoint_index: int = 0) -> None:
-        logger.info("############### EAVL3 ##################")
+        logger.info("############### EAVL ##################")
         self.log_manager = log_manager
         #ログ出力設定
         #time, reward
@@ -1450,6 +1633,7 @@ class PPOTrainerO3(BaseRLTrainerOracle):
             if (self.step+1) % 100 == 0:
                 logger.info(f"step={self.step+1}")
             self.step += 1
+            
             current_episodes = self.envs.current_episodes()
 
             with torch.no_grad():
@@ -1466,7 +1650,9 @@ class PPOTrainerO3(BaseRLTrainerOracle):
                     deterministic=False,
                 )
 
+            #start_step = time.time()
             outputs = self.envs.step([a[0].item() for a in actions])
+            #logger.info(f"End envs.step at {time.time() - start_step}")
  
             observations, rewards, dones, infos = [
                 list(x) for x in zip(*outputs)
@@ -1480,7 +1666,6 @@ class PPOTrainerO3(BaseRLTrainerOracle):
             )
             
             reward = []
-            pic_val = []
             picture_value = []
             similarity = []
             pic_sim = []
@@ -1492,10 +1677,10 @@ class PPOTrainerO3(BaseRLTrainerOracle):
             meteor_score = []
             pas_score = []
             hes_score = []
+
             n_envs = self.envs.num_envs
             for n in range(n_envs):
                 reward.append(rewards[n][0])
-                pic_val.append(rewards[n][2])
                 picture_value.append(0)
                 similarity.append(0)
                 pic_sim.append(0)
@@ -1508,8 +1693,8 @@ class PPOTrainerO3(BaseRLTrainerOracle):
                 pas_score.append(0)
                 hes_score.append(0)
                 
-                self._taken_picture_list[n].append([rewards[n][2], observations[n]["rgb"], rewards[n][6], rewards[n][7], infos[n]["explored_map"]])
-                    
+                self._taken_picture_list[n].append([rewards[n][2], observations[n]["rgb"], rewards[n][5], rewards[n][6], infos[n]["explored_map"]])
+                
             reward = torch.tensor(reward, dtype=torch.float, device=self.device).unsqueeze(1)
             exp_area = torch.tensor(exp_area, dtype=torch.float, device=self.device).unsqueeze(1)
             picture_value = torch.tensor(picture_value, dtype=torch.float, device=self.device).unsqueeze(1)
@@ -1539,8 +1724,9 @@ class PPOTrainerO3(BaseRLTrainerOracle):
                         _episode_id = str(int(_episode_id) + 1)
 
                     # 写真の選別
-                    self._taken_picture_list[n], picture_value[n] = self._select_pictures(self._taken_picture_list[n])
-                    #self._taken_picture_list[n], picture_value[n] = self._select_pictures2(self._taken_picture_list[n])
+                    #self._taken_picture_list[n], picture_value[n] = self._select_pictures(self._taken_picture_list[n])
+                    self._taken_picture_list[n], picture_value[n] = self._select_pictures_mmr(self._taken_picture_list[n])
+                    #self._taken_picture_list[n], picture_value[n] = self.select_similarity_pictures(self._taken_picture_list[n])
                     #self._taken_picture_list[n], picture_value[n] = self._select_random_pictures(self._taken_picture_list[n])
                     #results_image, positions_x, positions_y = self._create_results_image(self._taken_picture_list[n], infos[n]["explored_map"])
                     results_image, image_list = self._create_results_image2(self._taken_picture_list[n], infos[n]["explored_map"])
@@ -1558,7 +1744,10 @@ class PPOTrainerO3(BaseRLTrainerOracle):
                     pred_description = ""
                     if results_image is not None:
                         #pred_description = self.create_description_from_results_image(results_image, positions_x, positions_y)
-                        pred_description = self.create_description_sometimes(image_list, results_image)
+                        pred_description, image_descriptions = self.create_description_sometimes(image_list, results_image)
+                        #logger.info("CAPTION")
+                        #pred_description = self.create_description_sometimes(image_list, results_image, caption=True)
+                        #pred_description = self.create_description_multi(image_list, results_image)
 
                     s_lemmatized = self.lemmatize_and_filter(pred_description)                        
                     description_list = self.description_dict[current_episodes[n].scene_id[-15:-4]]
@@ -1596,10 +1785,9 @@ class PPOTrainerO3(BaseRLTrainerOracle):
                     pas_score[n] = sum(pas_list) / len(pas_list)    
                     hes_score[n] = self.eval_model(hes_sentence_list).item()
 
-                    reward[n] += similarity[n]*10
-                    current_episode_reward += similarity[n]*10
+                    reward[n] += hes_score[n]*2
+                    current_episode_reward += hes_score[n]*2
                     
-                    # average of picture value par 1 picture
                     current_episode_picture_value[n] += picture_value[n]
                     current_episode_similarity[n] += similarity[n]
                     current_episode_picsim[n] += pic_sim[n]
@@ -1652,7 +1840,7 @@ class PPOTrainerO3(BaseRLTrainerOracle):
                     current_episode_meteor_score[n] = 0
                     current_episode_pas_score[n] = 0
                     current_episode_hes_score[n] = 0
-
+                    
                     stats_episodes[
                         (
                             current_episodes[n].scene_id,
@@ -1673,7 +1861,7 @@ class PPOTrainerO3(BaseRLTrainerOracle):
                         for j in range(20):
                            rgb_frames[n].append(picture) 
                         metrics=self._extract_scalars_from_info(infos[n])
-                        
+
                         name_hes = str(len(stats_episodes)) + "-" + str(hes_score[n].item())[:4] + "-" + str(episode_stats["exp_area"])[:4]
                         generate_video(
                             video_option=self.config.VIDEO_OPTION,
@@ -1737,7 +1925,7 @@ class PPOTrainerO3(BaseRLTrainerOracle):
         
         
     def random_eval(self, log_manager: LogManager, date: str,) -> None:
-        logger.info("RANDOM 3")
+        logger.info("RANDOM")
         self.log_manager = log_manager
         #ログ出力設定
         #time, reward
@@ -1838,7 +2026,6 @@ class PPOTrainerO3(BaseRLTrainerOracle):
             )
             
             reward = []
-            pic_val = []
             picture_value = []
             similarity = []
             pic_sim = []
@@ -1854,7 +2041,6 @@ class PPOTrainerO3(BaseRLTrainerOracle):
 
             for n in range(n_envs):
                 reward.append(rewards[n][0])
-                pic_val.append(rewards[n][2])
                 picture_value.append(0)
                 similarity.append(0)
                 pic_sim.append(0)
@@ -1919,8 +2105,9 @@ class PPOTrainerO3(BaseRLTrainerOracle):
                     pred_description = ""
                     if results_image is not None:
                         #pred_description = self.create_description_from_results_image(results_image, positions_x, positions_y)
-                        pred_description = self.create_description_sometimes(image_list, results_image)
-                    
+                        pred_description, image_descriptions = self.create_description_sometimes(image_list, results_image)
+                        #pred_description = self.create_description_multi(image_list, results_image)
+
                     s_lemmatized = self.lemmatize_and_filter(pred_description)
                     description_list = self.description_dict[current_episodes[n].scene_id[-15:-4]]
                     hes_sentence_list = [pred_description]
@@ -1956,7 +2143,7 @@ class PPOTrainerO3(BaseRLTrainerOracle):
                     meteor_score[n] = sum(meteor_list) / len(meteor_list)
                     pas_score[n] = sum(pas_list) / len(pas_list)
                     hes_score[n] = self.eval_model(hes_sentence_list).item()
-
+                    
                     reward[n] += similarity[n]*10
                     current_episode_reward += similarity[n]*10
                         
@@ -1972,13 +2159,14 @@ class PPOTrainerO3(BaseRLTrainerOracle):
                     current_episode_hes_score[n] += hes_score[n]
                     
                     # save description
-                    out_path = os.path.join("log/" + date + "/random3/description.txt")
+                    out_path = os.path.join("log/" + date + "/random/description.txt")
                     with open(out_path, 'a') as f:
                         # print関数でファイルに出力する
                         print(str(current_episodes[n].scene_id[-15:-4]) + "_" + str(_episode_id), file=f)
                         print(description, file=f)
                         print(pred_description, file=f)
                         print(similarity[n].item(), file=f)
+                        print(hes_score[n].item(), file=f)
                         #print(location_input, file=f)
                                         
                     pbar.update()
@@ -2033,7 +2221,7 @@ class PPOTrainerO3(BaseRLTrainerOracle):
                         for j in range(20):
                             rgb_frames[n].append(picture) 
                         metrics=self._extract_scalars_from_info(infos[n])
-
+                        
                         name_hes = str(len(stats_episodes)) + "-" + str(hes_score[n].item())[:4] + "-" + str(episode_stats["exp_area"])[:4]
                         generate_video(
                             video_option=self.config.VIDEO_OPTION,
@@ -2089,5 +2277,171 @@ class PPOTrainerO3(BaseRLTrainerOracle):
         logger.info("PAS Score: " + str(metrics["pas_score"]))
         logger.info("BLUE: " + str(metrics["bleu_score"]) + ", ROUGE-1: " + str(metrics["rouge_1_score"]) + ", ROUGE-2: " + str(metrics["rouge_2_score"]) + ", ROUGE-L: " + str(metrics["rouge_L_score"]) + ", METEOR: " + str(metrics["meteor_score"]))
         eval_metrics_logger.writeLine(str(step_id)+","+str(metrics["exp_area"])+","+str(metrics["similarity"])+","+str(metrics["picture_value"])+","+str(metrics["pic_sim"])+","+str(metrics["bleu_score"])+","+str(metrics["rouge_1_score"])+","+str(metrics["rouge_2_score"])+","+str(metrics["rouge_L_score"])+","+str(metrics["meteor_score"])+","+str(metrics["pas_score"])+","+str(metrics["hes_score"])+","+str(metrics["raw_metrics.agent_path_length"]))
+
+        self.envs.close()
+
+
+    def collect_images(self, checkpoint_path: str) -> None:
+        logger.info("############### Collect Images ##################")
+        
+        # Map location CPU is almost always better than mapping to a CUDA device.
+        checkpoint_path = "/gs/fs/tga-aklab/matsumoto/Main/cpt/24-10-19 21-11-05/ckpt.206.pth"
+        ckpt_dict = self.load_checkpoint(checkpoint_path, map_location="cpu")
+        logger.info(checkpoint_path)
+
+        if self.config.EVAL.USE_CKPT_CONFIG:
+            config = self._setup_eval_config(ckpt_dict["config"])
+        else:
+            config = self.config.clone()
+
+        ppo_cfg = config.RL.PPO
+
+        config.defrost()
+        config.TASK_CONFIG.DATASET.SPLIT = config.EVAL.SPLIT
+        config.freeze()
+
+        if len(self.config.VIDEO_OPTION) > 0:
+            config.defrost()
+            config.TASK_CONFIG.TASK.MEASUREMENTS.append("TOP_DOWN_MAP")
+            config.TASK_CONFIG.TASK.MEASUREMENTS.append("COLLISIONS")
+            config.freeze()
+
+        logger.info(f"env config: {config}")
+        self.envs = construct_envs(config, get_env_class(config.ENV_NAME))
+        self._setup_actor_critic_agent(ppo_cfg)
+
+        self.agent.load_state_dict(ckpt_dict["state_dict"])
+        self.actor_critic = self.agent.actor_critic
+        
+        # rgb_image, picture_value, depth
+        self.pictures = []
+        for i in range(self.envs.num_envs):
+            self.pictures.append([])
+        
+        observations = self.envs.reset()
+        batch = batch_obs(observations, device=self.device)
+        
+        current_episode_exp_area = torch.zeros(self.envs.num_envs, 1, device=self.device)
+
+        test_recurrent_hidden_states = torch.zeros(
+            self.actor_critic.net.num_recurrent_layers,
+            self.config.NUM_PROCESSES,
+            ppo_cfg.hidden_size,
+            device=self.device,
+        )
+        prev_actions = torch.zeros(self.config.NUM_PROCESSES, 1, device=self.device, dtype=torch.long)
+        not_done_masks = torch.zeros(self.config.NUM_PROCESSES, 1, device=self.device)
+        stats_episodes = dict()  # dict of dicts that stores stats per episode
+        raw_metrics_episodes = dict()
+
+        rgb_frames = [
+            [] for _ in range(self.config.NUM_PROCESSES)
+        ]  # type: List[List[np.ndarray]]
+        
+        pbar = tqdm.tqdm(total=self.config.TEST_EPISODE_COUNT)
+        self.actor_critic.eval()
+        self.step = 0
+        while (
+            len(stats_episodes) < self.config.TEST_EPISODE_COUNT
+            and self.envs.num_envs > 0
+        ):  
+            if (self.step+1) % 100 == 0:
+                logger.info(f"step={self.step+1}")
+            self.step += 1
+            
+            current_episodes = self.envs.current_episodes()
+
+            with torch.no_grad():
+                (
+                    _,
+                    actions,
+                    _,
+                    test_recurrent_hidden_states,
+                ) = self.actor_critic.act(
+                    batch,
+                    test_recurrent_hidden_states,
+                    prev_actions,
+                    not_done_masks,
+                    deterministic=False,
+                )
+
+            outputs = self.envs.step([a[0].item() for a in actions])
+ 
+            observations, rewards, dones, infos = [
+                list(x) for x in zip(*outputs)
+            ]
+            batch = batch_obs(observations, device=self.device)
+            
+            not_done_masks = torch.tensor(
+                [[0.0] if done else [1.0] for done in dones],
+                dtype=torch.float,
+                device=self.device,
+            )
+            
+            exp_area = [] # 探索済みのエリア()
+            
+            n_envs = self.envs.num_envs
+            for n in range(n_envs):
+                pic_val = (rewards[n][2])
+                depth_ave = np.mean(observations[n]["depth"])
+                object_num = rewards[n][3]
+                self.pictures[n].append([observations[n]["rgb"], depth_ave, object_num, pic_val])
+                exp_area.append(rewards[n][1])
+
+            exp_area = torch.tensor(exp_area, dtype=torch.float, device=self.device).unsqueeze(1)
+            current_episode_exp_area += exp_area     
+            next_episodes = self.envs.current_episodes()
+
+            for n in range(n_envs):
+                if len(stats_episodes) >= self.config.TEST_EPISODE_COUNT:
+                    break
+
+                # episode ended
+                if not_done_masks[n].item() == 0:
+                    # use scene_id + episode_id as unique id for storing stats
+                    _episode_id = current_episodes[n].episode_id
+                    while (current_episodes[n].scene_id, _episode_id) in stats_episodes:
+                        _episode_id = str(int(_episode_id) + 1)
+
+                    pbar.update()
+                    episode_stats = dict()
+                    episode_stats["exp_area"] = current_episode_exp_area[n].item()
+                    
+                    episode_stats.update(
+                        self._extract_scalars_from_info(infos[n])
+                    )
+
+                    stats_episodes[
+                        (
+                            current_episodes[n].scene_id,
+                            _episode_id,
+                        )
+                    ] = episode_stats
+                    
+                    raw_metrics_episodes[
+                        current_episodes[n].scene_id + '.' + 
+                        _episode_id
+                    ] = infos[n]["raw_metrics"]
+
+                    if len(self.config.VIDEO_OPTION) > 0:
+                        # Save All Picture                        
+                        for j in range(len(self.pictures[n])):
+                            rgb_image = self.pictures[n][j][0]
+                            depth_avg = self.pictures[n][j][1]
+                            obj_num = self.pictures[n][j][2]
+                            pic_value = self.pictures[n][j][3]
+                            scene_name = current_episodes[n].scene_id[-15:-4]
+                            explored_area = current_episode_exp_area[n].item()
+
+                            dir_name = f"/gs/fs/tga-aklab/matsumoto/Main/collected_images/{len(stats_episodes)}"
+                            picture_name = f"{scene_name}_{j}_{depth_avg}_{obj_num}_{pic_value}_{explored_area}"
+                            os.makedirs(dir_name, exist_ok=True)
+                        
+                            picture = Image.fromarray(np.uint8(rgb_image))
+                            file_path = dir_name + "/" + picture_name + ".png"
+                            picture.save(file_path)
+
+                    current_episode_exp_area[n] = 0   
+                    self.pictures[n] = []
 
         self.envs.close()

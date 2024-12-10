@@ -56,14 +56,18 @@ def generate_response(image, input_text, model_path):
             (336, 336),
             interpolation=cv2.INTER_CUBIC,
         )
+    logger.info(f"max: {np.max(image_array)}, min: {np.min(image_array)}")
     image = Image.fromarray(image_array)
+    image.save("resized_map.png")
     image_tensor = image_processor.preprocess(image, return_tensors='pt')['pixel_values'].half().cuda()
     logger.info(f"image_tensor={image_tensor[0].shape}")
-    image_tensor2 = image_tensor[0] * 255
+    image_tensor2 = image_tensor[0]
+    logger.info(f"max: {torch.max(image_tensor2)}, min: {torch.min(image_tensor2)}")
+    #image_tensor2 = image_tensor2[0] * 255
     image_tensor2 = image_tensor2.to(torch.uint8)
     image_tensor2 = transforms.ToPILImage()(image_tensor2)
     # 画像を保存
-    image_tensor2.save("output_image2.png")
+    image_tensor2.save("output_image3.png")
 
     inp = input_text
     print(f"ROLE: {roles[1]}: ", end="")
@@ -165,6 +169,11 @@ if __name__ == '__main__':
     #model_path = "/gs/fs/tga-aklab/matsumoto/Main/model/llava-v1.5-7b/"
     model_path = "liuhaotian/llava-v1.5-13b"
     image_file = "/gs/fs/tga-aklab/matsumoto/Main/map_image.png"
+    image_file = "/gs/fs/tga-aklab/matsumoto/Main/map_each0.png"
+    #image_file = "/gs/fs/tga-aklab/matsumoto/Main/map_each2.png"
+    #image_file = "/gs/fs/tga-aklab/matsumoto/Main/map_each5.png"
+    image_file = "/gs/fs/tga-aklab/matsumoto/Main/map_each6.png"
+    image_file = "/gs/fs/tga-aklab/matsumoto/Main/map_each9.png"
 
     input_text = "The image is a map of a certain environment.\n"\
                 "White areas are already explored, and black areas are unexplored or walls.\n"\
@@ -182,6 +191,19 @@ if __name__ == '__main__':
     input_text = "You are a robot that moves around based on a map. \n"\
                 "In the map, white areas are already explored, and black areas are unexplored or walls. \n"\
                 "Using this map, when you move in the order “Red”, “Green”, “Blue”, “Yellow”, “Cyan”, “Magenta”, “Orange”, “Purple”, “Brown”, and “Pink”, please explain in detail how you moved around in this environment, based on spatial information."
+    input_text = "What color occupies the largest area in the image?"
+    input_text = "This image is a map of a building. Black represents walls and obstacles, and white represents areas that have already been explored.\n"\
+                "Where is the red dot located on the map?"
+    #input_text = "This image is a map of a building. Black represents walls and obstacles, and white represents areas that have already been explored.\n"\
+    #            "Where is the blue dot located on the map?"
+    #input_text = "This image is a map of a building. Black represents walls and obstacles, and white represents areas that have already been explored.\n"\
+    #            "Where is the purple dot located on the map?"
+    input_text = "This image is a map of a building. Black represents walls and obstacles, and white represents areas that have already been explored.\n"\
+                "Where is the orange dot located on the map?"
+    input_text = "This image is a map of a building. Black represents walls and obstacles, and white represents areas that have already been explored.\n"\
+                "Where is the pink dot located on the map?"
+    
+    
     image = load_image(image_file)
     response = generate_response(image, input_text, model_path)
 

@@ -21,8 +21,8 @@ conda activate habitat2
 #pip install huggingface-hub==0.22.2
 #pip install transformers==4.37.2
 
-echo MMR
-CUDA_LAUNCH_BLOCKING=1 python run.py --run-type eval --area-reward-type coverage
+echo MMR2
+CUDA_LAUNCH_BLOCKING=1 python run.py --run-type eval3 --area-reward-type coverage
 #CUDA_LAUNCH_BLOCKING=1 python run.py --run-type eval2 --area-reward-type coverage
 #CUDA_LAUNCH_BLOCKING=1 python run.py --run-type eval5 --area-reward-type coverage
 #CUDA_LAUNCH_BLOCKING=1 python run.py --run-type eval5 --area-reward-type novelty
